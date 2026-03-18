@@ -27,7 +27,7 @@
 [![M/G/1 Queue](https://img.shields.io/badge/Teoría_de_Colas-M%2FG%2F1-00df76?style=flat-square)]()
 [![No dependencies](https://img.shields.io/badge/dependencias-0-ff2d50?style=flat-square)]()
 [![GitHub Pages](https://img.shields.io/badge/GitHub_Pages-deployed-222?style=flat-square&logo=github)](https://un2versidad.github.io/TrafficFlow/)
-
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Un2versidad/TrafficFlow)
 </div>
 
 ---
