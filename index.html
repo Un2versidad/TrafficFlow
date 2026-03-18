@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2300df76'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-size='20'%3E%F0%9F%9A%A6%3C/text%3E%3C/svg%3E">
+<title>TrafficFlow · Intersección El Bosque — Panamá</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzAwZGY3NiIvPjxyZWN0IHg9IjExIiB5PSI1IiB3aWR0aD0iMTAiIGhlaWdodD0iMjIiIHJ4PSIzIiBmaWxsPSIjMGEwZDEwIi8+PGNpcmNsZSBjeD0iMTYiIGN5PSIxMSIgcj0iMy4yIiBmaWxsPSIjZmYyZDUwIi8+PGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMy4yIiBmaWxsPSIjZmZiZTJlIiBvcGFjaXR5PSIwLjQiLz48Y2lyY2xlIGN4PSIxNiIgY3k9IjIxIiByPSIzLjIiIGZpbGw9IiMwMGRmNzYiIG9wYWNpdHk9IjAuOSIvPjwvc3ZnPg==">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+
+</head>
+<body>
+<div id="tb">
+  <div class="brand">
+    <svg class="brand-ico-svg" width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">
+      <!-- Fondo verde con cuadrados redondeados -->
+      <rect width="30" height="30" rx="6" fill="#00df76"/>
+      <!-- Cuerpo del semáforo -->
+      <rect x="10" y="5" width="10" height="20" rx="3" fill="#0a0d10"/>
+      <!-- Luz roja -->
+      <circle cx="15" cy="10" r="3" fill="#ff2d50">
+        <animate attributeName="opacity" values="0.4;0.4;0.4;1;0.4" dur="6s" repeatCount="indefinite" begin="0s"/>
+      </circle>
+      <!-- Luz amarilla -->
+      <circle cx="15" cy="15" r="3" fill="#ffbe2e" opacity="0.35"/>
+      <!-- Luz verde -->
+      <circle cx="15" cy="20" r="3" fill="#00df76" opacity="0.3">
+        <animate attributeName="opacity" values="0.3;1;0.3" dur="2s" repeatCount="indefinite" begin="0s"/>
+      </circle>
+      <!-- Resplandor verde -->
+      <circle cx="15" cy="20" r="4.5" fill="#00df76" opacity="0">
+        <animate attributeName="opacity" values="0;0.25;0" dur="2s" repeatCount="indefinite"/>
+      </circle>
+    </svg>
+    <div class="brand-nm">Traffic<span>Flow</span></div>
+  </div>
+  <div class="ctrls">
+    <button class="btn go" id="btnR" onclick="toggleRun()">▶ INICIAR</button>
+    <button class="btn" onclick="resetAll()">↺ RESET</button>
+    <div class="sep"></div>
+    <button class="scn on" id="tv" onclick="loadScenario('valle')">🌿 VALLE</button>
+    <button class="scn" id="tm" onclick="loadScenario('manana')">🌅 7-9 AM</button>
+    <button class="scn" id="tmd" onclick="loadScenario('mediodia')">☀️ 12-2 PM</button>
+    <button class="scn" id="tp" onclick="loadScenario('pico')">🔴 5-7 PM</button>
+    <div class="sep"></div>
+    <button class="btn" id="btnM" onclick="toggleMode()">⚡ CONVENCIONAL</button>
+    <div class="sep"></div>
+    <button class="btn" id="btnPDF" onclick="exportPDF()" style="border-color:var(--B);color:var(--B)">📄 PDF</button>
+    <button class="btn" onclick="openScorecard()" style="border-color:rgba(30,176,255,0.5);color:var(--B)">📊 COMPARAR</button>
+    <div class="sep"></div>
+    <label style="font-size:8px;color:var(--tx3);font-family:var(--fm)">VEL:</label>
+    <select class="spd" onchange="SIM.spd=+this.value">
+      <option value="1">1×</option><option value="3">3×</option>
+      <option value="6" selected>6×</option><option value="12">12×</option>
+    </select>
+  </div>
+  <div class="clk">
+    <div class="dot" id="ld"></div>
+    <span id="clk" style="font-weight:700">T = 0.0 s</span>
+    <span id="slbl" style="color:var(--tx3)">VALLE</span>
+  </div>
+</div>
+
+<div id="lp">
+  <div class="sh">Semáforos · Control de Fases</div>
+  <div class="bs" style="background:linear-gradient(135deg,rgba(255,45,80,0.06),rgba(255,190,46,0.04));border-color:rgba(255,45,80,0.25)">
+    <div style="font-size:7px;font-family:var(--fm);color:var(--R);letter-spacing:.12em;margin-bottom:6px;font-weight:700">⚠ SÍNTESIS DEL PROBLEMA — VUELTA EN U</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+      <div style="background:rgba(255,45,80,0.08);border:1px solid rgba(255,45,80,0.2);border-radius:3px;padding:4px 6px">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">Luz verde</div>
+        <div style="font-family:var(--fm);font-size:13px;font-weight:700;color:var(--R)">≈18 s</div>
+        <div style="font-size:7px;color:var(--tx3)">solo 5-6 veh/ciclo</div>
+      </div>
+      <div style="background:rgba(255,45,80,0.08);border:1px solid rgba(255,45,80,0.2);border-radius:3px;padding:4px 6px">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">Luz roja</div>
+        <div style="font-family:var(--fm);font-size:13px;font-weight:700;color:var(--R)">90-100 s</div>
+        <div style="font-size:7px;color:var(--tx3)">excesivamente largo</div>
+      </div>
+      <div style="background:rgba(255,45,80,0.08);border:1px solid rgba(255,45,80,0.2);border-radius:3px;padding:4px 6px">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">Cola máx.</div>
+        <div style="font-family:var(--fm);font-size:13px;font-weight:700;color:var(--R)">25-28 veh</div>
+        <div style="font-size:7px;color:var(--tx3)">congestión severa</div>
+      </div>
+      <div style="background:rgba(255,45,80,0.08);border:1px solid rgba(255,45,80,0.2);border-radius:3px;padding:4px 6px">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">Wq pico</div>
+        <div style="font-family:var(--fm);font-size:13px;font-weight:700;color:var(--R)">4.5 min</div>
+        <div style="font-size:7px;color:var(--tx3)">por conductor</div>
+      </div>
+    </div>
+  </div>
+  <div class="sc">
+    <div class="sc-t">Sem. A — VUELTA EN U <span class="tag" style="background:var(--R2);color:var(--R);border:1px solid var(--R)">PROBLEMA CENTRAL</span></div>
+    <div class="lts">
+      <div class="lt R on" id="sa-R"></div>
+      <div class="lt Y" id="sa-Y"></div>
+      <div class="lt G" id="sa-G"></div>
+      <span style="font-size:8px;color:var(--tx3);font-family:var(--fm);margin-left:4px">← viene de la derecha</span>
+    </div>
+    <div class="ph R" id="sa-ph">ROJO</div>
+    <div class="tbar"><div class="tf" id="sa-f" style="width:100%;background:var(--R)"></div></div>
+    <div class="ti" id="sa-tl">100.0 s</div>
+    <div class="sg">
+      <div class="kv"><div class="k">Cola A</div><div class="v" id="sa-q" style="color:var(--R)">0</div></div>
+      <div class="kv"><div class="k">Servidos</div><div class="v" id="sa-s" style="color:var(--G)">0</div></div>
+    </div>
+  </div>
+  <div class="sc">
+    <div class="sc-t">Sem. B — Av. Principal <span class="tag" style="background:var(--G2);color:var(--G);border:1px solid var(--G)">VERT</span></div>
+    <div class="lts">
+      <div class="lt R" id="sb-R"></div>
+      <div class="lt Y" id="sb-Y"></div>
+      <div class="lt G on" id="sb-G"></div>
+      <span style="font-size:8px;color:var(--tx3);font-family:var(--fm);margin-left:4px">↕ avenida principal</span>
+    </div>
+    <div class="ph G" id="sb-ph">VERDE</div>
+    <div class="tbar"><div class="tf" id="sb-f" style="width:100%;background:var(--G)"></div></div>
+    <div class="ti" id="sb-tl">30.0 s</div>
+    <div class="sg">
+      <div class="kv"><div class="k">Cola B</div><div class="v" id="sb-q" style="color:var(--B)">0</div></div>
+      <div class="kv"><div class="k">Servidos</div><div class="v" id="sb-s" style="color:var(--G)">0</div></div>
+    </div>
+  </div>
+  <div class="sc">
+    <div class="sc-t">Sem. C — ← Recto R→L <span class="tag" style="background:var(--R2);color:var(--R);border:1px solid var(--R)">HORIZ ≡ A+D</span></div>
+    <div class="lts">
+      <div class="lt R" id="sc-R"></div>
+      <div class="lt Y" id="sc-Y"></div>
+      <div class="lt G on" id="sc-G"></div>
+      <span style="font-size:8px;color:var(--tx3);font-family:var(--fm);margin-left:4px">→ viene de la izquierda</span>
+    </div>
+    <div class="ph G" id="sc-ph">VERDE</div>
+    <div class="tbar"><div class="tf" id="sc-f" style="width:100%;background:var(--G)"></div></div>
+    <div class="ti" id="sc-tl">30.0 s</div>
+    <div class="sg">
+      <div class="kv"><div class="k">Cola C</div><div class="v" id="sc-q" style="color:var(--B)">0</div></div>
+      <div class="kv"><div class="k">Servidos</div><div class="v" id="sc-s" style="color:var(--G)">0</div></div>
+    </div>
+  </div>
+  <div class="sc">
+    <div class="sc-t">Sem. D — → Recto L→R <span class="tag" style="background:var(--G2);color:var(--G);border:1px solid var(--G)">HORIZ</span></div>
+    <div class="lts">
+      <div class="lt R on" id="sd-R"></div>
+      <div class="lt Y" id="sd-Y"></div>
+      <div class="lt G" id="sd-G"></div>
+      <span style="font-size:8px;color:var(--tx3);font-family:var(--fm);margin-left:4px">→ carriles rectos izq→der</span>
+    </div>
+    <div class="ph R" id="sd-ph">ROJO</div>
+    <div class="tbar"><div class="tf" id="sd-f" style="width:100%;background:var(--R)"></div></div>
+    <div class="ti" id="sd-tl">100.0 s</div>
+    <div class="sg">
+      <div class="kv"><div class="k">Cola D</div><div class="v" id="sd-q" style="color:var(--R)">0</div></div>
+      <div class="kv"><div class="k">Servidos</div><div class="v" id="sd-s" style="color:var(--G)">0</div></div>
+    </div>
+  </div>
+  <div class="slr">
+    <div class="sll">λ Horizontal (A) <span id="la-v" style="color:var(--R)">0.4 v/s</span></div>
+    <input type="range" min="0.01" max="0.30" step="0.01" value="0.04" oninput="SIM.lA=+this.value;document.getElementById('la-v').textContent=parseFloat(this.value).toFixed(2)+' v/s'">
+  </div>
+  <div class="slr">
+    <div class="sll">λ Vertical (B) <span id="lb-v" style="color:var(--B)">0.2 v/s</span></div>
+    <input type="range" min="0.01" max="0.15" step="0.01" value="0.02" oninput="SIM.lB=+this.value;document.getElementById('lb-v').textContent=parseFloat(this.value).toFixed(2)+' v/s'">
+  </div>
+  <div class="slr">
+    <div class="sll">T_verde A <span id="tga-v" style="color:var(--G)">18 s</span></div>
+    <input type="range" min="10" max="60" step="1" value="18" oninput="SIM.tGA=+this.value;document.getElementById('tga-v').textContent=this.value+' s'">
+  </div>
+  <div class="slr">
+    <div class="sll">T_rojo A <span id="tra-v" style="color:var(--R)">100 s</span></div>
+    <input type="range" min="20" max="120" step="5" value="100" oninput="SIM.tRA=+this.value;document.getElementById('tra-v').textContent=this.value+' s'">
+  </div>
+</div>
+
+<div id="cw"><canvas id="rc"></canvas><canvas id="vc"></canvas>
+  <div id="uturn-badge" style="
+    display:none;
+    position:absolute;
+    bottom:8px;
+    left:8px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:10px;
+    font-weight:700;
+    padding:4px 12px;
+    border-radius:4px;
+    border:1px solid;
+    letter-spacing:0.08em;
+    pointer-events:none;
+    z-index:10;
+  ">--</div>
+  <div id="uturn-label" style="
+    display:none;
+    position:absolute;
+    bottom:8px;
+    right:8px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:8px;
+    color:rgba(150,170,200,0.5);
+    pointer-events:none;
+    z-index:10;
+  ">VUELTA EN U — SEM A</div>
+</div>
+
+<div id="rp">
+  <div class="sh">Métricas · M/G/1 — Vuelta en U</div>
+  <div class="bigv">
+    <div class="n" id="rp-wq" style="color:var(--Y)">0.00</div>
+    <div class="lb" id="wq-label">Wq PROMEDIO (minutos)</div>
+    <div style="display:flex;justify-content:center;gap:6px;margin-top:4px">
+      <span style="font-family:var(--fm);font-size:7px;background:var(--R2);border:1px solid rgba(255,45,80,0.3);border-radius:3px;padding:1px 5px;color:var(--R)">CONV ~4.5m</span>
+      <span style="font-family:var(--fm);font-size:7px;background:var(--G2);border:1px solid rgba(0,223,118,0.3);border-radius:3px;padding:1px 5px;color:var(--G)">INTEL ~1.8m</span>
+    </div>
+  </div>
+  <div class="bs">
+    <div class="sr"><span class="l">Cola máx. A (horiz.)</span><span class="v" id="rp-qa" style="color:var(--R)">0</span></div>
+    <div style="font-family:var(--fm);font-size:7px;color:var(--tx3);padding:1px 0 3px;display:flex;gap:5px">
+      <span style="color:var(--R)">CONV: 25–28</span><span>·</span><span style="color:var(--G)">INTEL: 10–12 veh</span>
+    </div>
+    <div class="sr"><span class="l">Cola máx. B (vert.)</span><span class="v" id="rp-qb" style="color:var(--B)">0</span></div>
+    <div class="sr"><span class="l">Throughput total</span><span class="v" id="rp-tp" style="color:var(--G)">0 v/h</span></div>
+    <div class="sr"><span class="l">Ciclos completados</span><span class="v" id="rp-cy">0</span></div>
+    <div class="sr"><span class="l">Veh/ciclo A</span><span class="v" id="rp-vc">0.0</span></div>
+  </div>
+  <div class="bs" id="intel-targets" style="display:none">
+    <div style="font-size:7px;font-family:var(--fm);color:var(--B);letter-spacing:.1em;margin-bottom:5px">OBJETIVOS MODO INTELIGENTE</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px">
+      <div style="background:rgba(0,223,118,0.07);border:1px solid rgba(0,223,118,0.2);border-radius:3px;padding:3px 5px;text-align:center">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">META Wq</div>
+        <div style="font-size:11px;font-weight:700;font-family:var(--fm);color:var(--G)">&lt;1.8 min</div>
+      </div>
+      <div style="background:rgba(0,223,118,0.07);border:1px solid rgba(0,223,118,0.2);border-radius:3px;padding:3px 5px;text-align:center">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">META ρ</div>
+        <div style="font-size:11px;font-weight:700;font-family:var(--fm);color:var(--G)">&lt;0.70</div>
+      </div>
+      <div style="background:rgba(0,223,118,0.07);border:1px solid rgba(0,223,118,0.2);border-radius:3px;padding:3px 5px;text-align:center">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">META COLA</div>
+        <div style="font-size:11px;font-weight:700;font-family:var(--fm);color:var(--G)">&lt;12 veh</div>
+      </div>
+      <div style="background:rgba(0,223,118,0.07);border:1px solid rgba(0,223,118,0.2);border-radius:3px;padding:3px 5px;text-align:center">
+        <div style="font-size:7px;color:var(--tx3);font-family:var(--fm)">META TH</div>
+        <div style="font-size:11px;font-weight:700;font-family:var(--fm);color:var(--G)">&gt;250v/h</div>
+      </div>
+    </div>
+  </div>
+  <div class="bs">
+    <div style="display:flex;justify-content:space-between;font-size:8px;font-family:var(--fm);color:var(--tx3)"><span>ρ utilización A</span><span id="rp-rho">0%</span></div>
+    <div class="rbar"><div class="rf" id="rho-f" style="width:0%;background:var(--G)"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:7px;color:var(--tx3);font-family:var(--fm)"><span>OK &lt;70%</span><span>CRÍTICO &gt;90%</span></div>
+  </div>
+  <div class="bs" id="mg1-panel">
+    <div style="font-size:7px;font-family:var(--fm);color:var(--B);letter-spacing:.1em;margin-bottom:6px">MODELO M/G/1 — ECUACIONES EN VIVO</div>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 8px;font-size:8px;align-items:center">
+      <span style="font-family:var(--fm);color:var(--tx3)">λ (llegadas)</span>
+      <span style="font-family:var(--fm);font-weight:700;color:var(--B)" id="mg1-lambda">--</span>
+      <span style="font-family:var(--fm);color:var(--tx3)">μ efectivo</span>
+      <span style="font-family:var(--fm);font-weight:700;color:var(--B)" id="mg1-mu">--</span>
+      <span style="font-family:var(--fm);color:var(--tx3)">ρ = λ/μ</span>
+      <span style="font-family:var(--fm);font-weight:700" id="mg1-rho">--</span>
+      <span style="font-family:var(--fm);color:var(--tx3)">E[Ts²]</span>
+      <span style="font-family:var(--fm);font-weight:700;color:var(--tx)" id="mg1-ts2">--</span>
+      <span style="font-family:var(--fm);color:var(--tx3)">Wq = λE[Ts²]/2(1-ρ)</span>
+      <span style="font-family:var(--fm);font-weight:700" id="mg1-wq">--</span>
+      <span style="font-family:var(--fm);color:var(--tx3)">Lq = λ · Wq</span>
+      <span style="font-family:var(--fm);font-weight:700" id="mg1-lq">--</span>
+    </div>
+    <div style="margin-top:5px;font-size:7px;font-family:var(--fm);color:var(--tx3);border-top:1px solid var(--br);padding-top:4px">
+      Pollaczek-Khinchine · 30 réplicas IC 95%
+      <span id="mg1-ic" style="float:right;font-weight:700;color:var(--G)">✓ IC 95%</span>
+    </div>
+  </div>
+  <div class="cm"><div class="lbl">COLA A — TIEMPO REAL</div><canvas class="mini" id="mc" height="58"></canvas></div>
+  <div class="cm"><div class="lbl">CICLO SEMAFÓRICO A</div><canvas class="mini" id="cc" height="36"></canvas></div>
+  <div class="bs" id="cmp-summary">
+    <div style="font-size:7px;font-family:var(--fm);color:var(--B);letter-spacing:.1em;margin-bottom:7px">TABLA COMPARATIVA DETALLADA</div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;margin-bottom:4px;font-size:7px;font-family:var(--fm);color:var(--tx3)">
+      <span>INDICADOR</span><span style="color:var(--R);text-align:center">CONV</span><span style="color:var(--G);text-align:center">INTEL</span><span style="text-align:center">MEJORA</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;padding:3px 0;border-bottom:1px solid var(--br);align-items:center">
+      <span style="font-size:8px;color:var(--tx2)">Wq espera</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--R);text-align:center" id="cs-wqc">--</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--G);text-align:center" id="cs-wqi">--</span>
+      <span style="font-family:var(--fm);font-size:9px;font-weight:700;text-align:center;color:var(--G)" id="cs-wqdelta">--</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;padding:3px 0;border-bottom:1px solid var(--br);align-items:center">
+      <span style="font-size:8px;color:var(--tx2)">Throughput</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--R);text-align:center" id="cs-tpc">--</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--G);text-align:center" id="cs-tpi">--</span>
+      <span style="font-family:var(--fm);font-size:9px;font-weight:700;text-align:center;color:var(--G)" id="cs-tpdelta">--</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;padding:3px 0;border-bottom:1px solid var(--br);align-items:center">
+      <span style="font-size:8px;color:var(--tx2)">Cola total</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--R);text-align:center" id="cs-qc">--</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--G);text-align:center" id="cs-qi">--</span>
+      <span style="font-family:var(--fm);font-size:9px;font-weight:700;text-align:center;color:var(--G)" id="cs-qdelta">--</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;padding:3px 0;border-bottom:1px solid var(--br);align-items:center">
+      <span style="font-size:8px;color:var(--tx2)">ρ utilizac.</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--R);text-align:center" id="cs-rhoc">--</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--G);text-align:center" id="cs-rhoi">--</span>
+      <span style="font-family:var(--fm);font-size:9px;font-weight:700;text-align:center;color:var(--G)" id="cs-rhodelta">--</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;padding:3px 0;border-bottom:1px solid var(--br);align-items:center">
+      <span style="font-size:8px;color:var(--tx2)">T ciclo</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--R);text-align:center">~124s</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--G);text-align:center" id="cs-cyclei">~35–98s</span>
+      <span style="font-family:var(--fm);font-size:9px;font-weight:700;color:var(--G);text-align:center">↓~45%</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 52px 52px 38px;gap:2px;padding:3px 0;align-items:center">
+      <span style="font-size:8px;color:var(--tx2)">Veh/ciclo</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--R);text-align:center">5–6</span>
+      <span style="font-family:var(--fm);font-size:10px;font-weight:700;color:var(--G);text-align:center">12–15</span>
+      <span style="font-family:var(--fm);font-size:9px;font-weight:700;color:var(--G);text-align:center">↑+150%</span>
+    </div>
+    <div id="cs-wqdiff" style="font-family:var(--fm);font-size:9px;text-align:center;padding:4px 6px;border-radius:3px;margin:6px 0 3px;font-weight:700"></div>
+    <div id="cs-tpdiff" style="font-family:var(--fm);font-size:9px;text-align:center;padding:4px 6px;border-radius:3px;margin:3px 0;font-weight:700"></div>
+  </div>
+  <div class="cmp">
+    <div class="lbl">📊 Wq: Comparativa Referencia (imagen)</div>
+    <canvas class="cmp-cv" id="cmp-bar" height="110"></canvas>
+  </div>
+  <div class="cmp">
+    <div class="lbl">⚡ vs 🧠 Wq acumulado en tiempo</div>
+    <div class="cmp-leg">
+      <span><i style="background:#ff2d50"></i>Convencional</span>
+      <span><i style="background:#00df76"></i>Inteligente</span>
+    </div>
+    <canvas class="cmp-cv" id="cmp-wq" height="72"></canvas>
+  </div>
+  <div class="cmp">
+    <div class="lbl">Throughput (veh/h) en tiempo</div>
+    <div class="cmp-leg">
+      <span><i style="background:#ff2d50"></i>Convencional</span>
+      <span><i style="background:#00df76"></i>Inteligente</span>
+    </div>
+    <canvas class="cmp-cv" id="cmp-tp" height="72"></canvas>
+  </div>
+  <div class="cmp">
+    <div class="lbl">Cola total (veh)</div>
+    <div class="cmp-leg">
+      <span><i style="background:#ff2d50"></i>Convencional</span>
+      <span><i style="background:#00df76"></i>Inteligente</span>
+    </div>
+    <canvas class="cmp-cv" id="cmp-q" height="72"></canvas>
+  </div>
+  <div class="bs" id="smart-panel" style="display:none">
+    <div style="font-size:7px;font-family:var(--fm);color:var(--B);letter-spacing:.1em;margin-bottom:5px">🧠 ANÁLISIS INTELIGENTE</div>
+    <div class="sr"><span class="l">Fase activa</span><span class="v" id="sm-phase" style="color:var(--G)">A+D</span></div>
+    <div class="sr"><span class="l">T_verde adaptado A+D</span><span class="v" id="sm-tad" style="color:var(--G)">--</span></div>
+    <div class="sr"><span class="l">T_verde adaptado B+C</span><span class="v" id="sm-tbc" style="color:var(--B)">--</span></div>
+    <div class="sr"><span class="l">Eficiencia A+D</span><span class="v" id="sm-effad" style="color:var(--G)">--</span></div>
+    <div class="sr"><span class="l">Eficiencia B+C</span><span class="v" id="sm-effbc" style="color:var(--B)">--</span></div>
+    <div class="sr"><span class="l">Saturación total</span><span class="v" id="sm-sat" style="color:var(--Y)">0%</span></div>
+  </div>
+
+  <div class="bs" id="markov-panel">
+    <div style="font-size:7px;font-family:var(--fm);color:var(--B);letter-spacing:.12em;margin-bottom:7px;display:flex;align-items:center;justify-content:space-between">
+      <span>&#x26D3; CADENA DE MARKOV &mdash; SEM A</span>
+      <span style="font-size:6px;color:var(--tx3)" id="mk-n">0 obs</span>
+    </div>
+
+    <!-- Lona de la línea de tiempo del estado -->
+    <div style="font-size:6px;font-family:var(--fm);color:var(--tx3);margin-bottom:2px">HISTORIAL DE ESTADOS (ultimos 60 ticks)</div>
+    <canvas id="mk-timeline" height="18" style="width:100%;display:block;border-radius:3px;margin-bottom:6px;background:#0b0f16"></canvas>
+
+    <!-- Barras de distribución en estado estacionario -->
+    <div style="font-size:6px;font-family:var(--fm);color:var(--tx3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Distribucion estacionaria &#x3C0;</div>
+    <div id="mk-dist-bars" style="margin-bottom:7px">
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">
+        <span style="font-family:var(--fm);font-size:7px;color:var(--G);width:28px">VERDE</span>
+        <div style="flex:1;height:8px;background:var(--p2);border-radius:2px;overflow:hidden">
+          <div id="mk-bar-g" style="height:100%;background:var(--G);border-radius:2px;transition:width .4s;width:0%"></div>
+        </div>
+        <span style="font-family:var(--fm);font-size:8px;font-weight:700;color:var(--G);width:34px;text-align:right" id="mk-emp-g">--%</span>
+        <span style="font-family:var(--fm);font-size:6px;color:var(--tx3);width:28px;text-align:right" id="mk-theo-g-small">--</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">
+        <span style="font-family:var(--fm);font-size:7px;color:var(--Y);width:28px">AMAR.</span>
+        <div style="flex:1;height:8px;background:var(--p2);border-radius:2px;overflow:hidden">
+          <div id="mk-bar-y" style="height:100%;background:var(--Y);border-radius:2px;transition:width .4s;width:0%"></div>
+        </div>
+        <span style="font-family:var(--fm);font-size:8px;font-weight:700;color:var(--Y);width:34px;text-align:right" id="mk-emp-y">--%</span>
+        <span style="font-family:var(--fm);font-size:6px;color:var(--tx3);width:28px;text-align:right" id="mk-theo-y-small">--</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">
+        <span style="font-family:var(--fm);font-size:7px;color:var(--R);width:28px">ROJO</span>
+        <div style="flex:1;height:8px;background:var(--p2);border-radius:2px;overflow:hidden">
+          <div id="mk-bar-r" style="height:100%;background:var(--R);border-radius:2px;transition:width .4s;width:0%"></div>
+        </div>
+        <span style="font-family:var(--fm);font-size:8px;font-weight:700;color:var(--R);width:34px;text-align:right" id="mk-emp-r">--%</span>
+        <span style="font-family:var(--fm);font-size:6px;color:var(--tx3);width:28px;text-align:right" id="mk-theo-r-small">--</span>
+      </div>
+      <div style="font-size:6px;color:var(--tx3);font-family:var(--fm);text-align:right;margin-top:1px">emp. &nbsp; &nbsp; teo.</div>
+    </div>
+
+    <!-- Visualización de la matriz de transición -->
+    <div style="font-size:6px;font-family:var(--fm);color:var(--tx3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Matriz de transicion P (empirica)</div>
+    <canvas id="mk-matrix" height="80" style="width:100%;display:block;border-radius:3px;margin-bottom:7px;background:#0b0f16"></canvas>
+
+    <!-- Fila de métricas clave -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-bottom:6px">
+      <div style="background:var(--p2);border-radius:3px;padding:4px 6px">
+        <div style="font-size:6px;color:var(--tx3);font-family:var(--fm)">&#x3C1; Markov = &#x3C0;(G)/(&#x3C0;(G)+&#x3C0;(R))</div>
+        <div style="font-family:var(--fm);font-size:13px;font-weight:700" id="mk-rho">--</div>
+      </div>
+      <div style="background:var(--p2);border-radius:3px;padding:4px 6px">
+        <div style="font-size:6px;color:var(--tx3);font-family:var(--fm)">Proximo estado</div>
+        <div style="font-family:var(--fm);font-size:13px;font-weight:700" id="mk-pred">--</div>
+      </div>
+    </div>
+
+    <!-- Indicador de convergencia -->
+    <div style="font-size:6px;font-family:var(--fm);color:var(--tx3);margin-bottom:3px">CONVERGENCIA &#x3C0; emp. vs teorica</div>
+    <div style="display:flex;align-items:center;gap:4px">
+      <div style="flex:1;height:5px;background:var(--p2);border-radius:2px;overflow:hidden">
+        <div id="mk-conv-bar" style="height:100%;background:var(--B);border-radius:2px;transition:width .6s;width:0%"></div>
+      </div>
+      <span style="font-family:var(--fm);font-size:8px;font-weight:700;color:var(--B)" id="mk-conv-pct">0%</span>
+    </div>
+    <div style="font-size:6px;color:var(--tx3);font-family:var(--fm);margin-top:4px;text-align:center;border-top:1px solid var(--br);padding-top:4px">
+      Cadena de Markov · Tiempo discreto · Ergodicidad
+    </div>
+  </div>
+</div>
+
+<div id="bot">
+  <div id="lh">LOG · EVENTOS DISCRETOS — LEF (Lista de Eventos Futuros)
+    <button class="btn" style="height:19px;padding:0 7px;font-size:7px" onclick="clearLog()">LIMPIAR</button>
+  </div>
+  <div id="ls"></div>
+</div>
+
+<div id="scorecard">
+  <div class="sc-box">
+    <div class="sc-hdr">
+      <h2>Tabla Comparativa Detallada — Resultados M/G/1</h2>
+      <button class="sc-close" onclick="document.getElementById('scorecard').classList.remove('show')">✕ CERRAR</button>
+    </div>
+    <div class="sc-body">
+      <div style="font-size:8px;color:var(--tx3);font-family:var(--fm);margin-bottom:10px">Resultados acumulados de la simulación · Modelo M/G/1 (Pollaczek-Khinchine)</div>
+      <div class="sc-row hdr">
+        <span>INDICADOR</span><span style="color:var(--R);text-align:center">⚡ CONVENCIONAL</span><span style="color:var(--G);text-align:center">🧠 INTELIGENTE</span><span style="text-align:center">MEJORA</span>
+      </div>
+      <div class="sc-row"><span class="label">Wq — Tiempo en cola</span><span class="vconv" id="sc-wqc">--</span><span class="vintel" id="sc-wqi">--</span><span class="delta" id="sc-wqd">--</span></div>
+      <div class="sc-row"><span class="label">Throughput (veh/h)</span><span class="vconv" id="sc-tpc">--</span><span class="vintel" id="sc-tpi">--</span><span class="delta" id="sc-tpd">--</span></div>
+      <div class="sc-row"><span class="label">Cola total máxima</span><span class="vconv" id="sc-qc">--</span><span class="vintel" id="sc-qi">--</span><span class="delta" id="sc-qd">--</span></div>
+      <div class="sc-row"><span class="label">Cola máx. Sem A (horiz.)</span><span class="vconv" id="sc-qac">--</span><span class="vintel" id="sc-qai">--</span><span class="delta" id="sc-qad">--</span></div>
+      <div class="sc-row"><span class="label">Cola máx. Sem B (vert.)</span><span class="vconv" id="sc-qbc">--</span><span class="vintel" id="sc-qbi">--</span><span class="delta" id="sc-qbd">--</span></div>
+      <div class="sc-row"><span class="label">Tiempo verde A</span><span class="vconv">18 s fijo</span><span class="vintel">15–45 s adapt.</span><span class="delta" style="color:var(--G)">↑ adaptativo</span></div>
+      <div class="sc-row"><span class="label">Tiempo rojo A</span><span class="vconv">~100 s fijo</span><span class="vintel">16–49 s adapt.</span><span class="delta" style="color:var(--G)">↓ ~60%</span></div>
+      <div class="sc-row"><span class="label">Ciclo total</span><span class="vconv">~124 s</span><span class="vintel" id="sc-cyci">~35–98 s</span><span class="delta" style="color:var(--G)">↓ ~45%</span></div>
+      <div class="sc-row"><span class="label">Vehículos/ciclo verde</span><span class="vconv">5–6 veh</span><span class="vintel">12–15 veh</span><span class="delta" style="color:var(--G)">↑ +150%</span></div>
+      <div class="sc-row"><span class="label">ρ utilización sistema</span><span class="vconv">&gt; 0.90 crítico</span><span class="vintel">&lt; 0.70 estable</span><span class="delta" style="color:var(--G)">↓ estabilizado</span></div>
+      <div class="sc-row"><span class="label">Ciclos completados</span><span class="vconv" id="sc-cyccc">--</span><span class="vintel" id="sc-cycci">--</span><span class="delta" id="sc-cyccd">--</span></div>
+      <div id="sc-verdict" class="sc-verdict"></div>
+      <div style="font-size:7.5px;color:var(--tx3);font-family:var(--fm);margin-top:8px;text-align:center">
+        Modelo M/G/1 · Ecuaciones Pollaczek-Khinchine · Wq = λE[Ts²]/2(1−ρ) · Lq = λ·Wq
+      </div>
+    </div>
+  </div>
+</div>
+<script src="sim.js"></script>
+</body>
+</html>
