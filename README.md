@@ -362,5 +362,3 @@ trafficflow/
 | Google Fonts | `fonts.googleapis.com` | Rajdhani + JetBrains Mono |
 | Canvas 2D API | Nativo del browser | Todo el render gráfico |
 | Web Animations | `requestAnimationFrame` nativo | Loop de simulación |
-
-Sin telemetría. Sin cookies. Sin backend. Todo corre en el navegador del usuario.
