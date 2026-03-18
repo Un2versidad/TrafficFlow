@@ -16,7 +16,7 @@
 ```
 
 **Simulación de Eventos Discretos · Optimización del Flujo Vehicular en la Vuelta en U del Bosque**  
-*Ingeniería de Sistemas · Simulación de Sistemas · 2026*
+*Ingeniería de Sistemas · Simulación de Sistemas*
 
 ---
 
