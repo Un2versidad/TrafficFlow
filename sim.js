@@ -50,6 +50,28 @@ const SIM = {
   CMAX2:60,  // máx. puntos para gráficos comparativos
 };
 
+function normalizeModeName(mode) {
+  return mode === 'inteligente' ? 'inteligente' : 'convencional';
+}
+
+function getModeMarkovAggregateKey(mode) {
+  return normalizeModeName(mode) === 'inteligente' ? 'A_inteligente' : 'A_convencional';
+}
+
+const MODE_RUN_STATS = {
+  convencional: { cycles: 0 },
+  inteligente: { cycles: 0 },
+};
+
+function resetModeRunStats() {
+  MODE_RUN_STATS.convencional.cycles = 0;
+  MODE_RUN_STATS.inteligente.cycles = 0;
+}
+
+function getModeRunStats(mode) {
+  return MODE_RUN_STATS[normalizeModeName(mode)];
+}
+
 let VEHS = [];
 let VID  = 0;
 
@@ -223,6 +245,8 @@ const MARKOV = {
     this.histB.push(tB); if (this.histB.length > this.maxHist) this.histB.shift();
     this.histC.push(tC); if (this.histC.length > this.maxHist) this.histC.shift();
     this.histD.push(tD); if (this.histD.length > this.maxHist) this.histD.shift();
+    recordMarkovAggregate('A', tA);
+    recordMarkovAggregate(getModeMarkovAggregateKey(SIM.mode), tA);
   },
 
   // Calcula conteos de transición empíricos desde el historial
@@ -266,8 +290,8 @@ const MARKOV = {
   },
 
   // Predice el próximo estado usando la transición de Markov
-  predictNext: function(currentState, mode) {
-    var mat = mode === 'inteligente' ? this.matIntel : this.matConv;
+  predictNext: function(currentState, mode, matrixOverride) {
+    var mat = matrixOverride || (mode === 'inteligente' ? this.matIntel : this.matConv);
     var row = mat[currentState];
     var r = Math.random();
     var cumul = 0;
@@ -300,8 +324,75 @@ const MARKOV = {
     this.histC = []; this.histD = [];
     this._lastPhaseA = null;
     this._cachedPred = 'R';
+    resetMarkovAggregate();
+    resetModeRunStats();
   }
 };
+
+function createMarkovAggregateStore() {
+  return {
+    obs: 0,
+    last: null,
+    visits: { R:0, Y:0, G:0 },
+    trans: {
+      R: { R:0, Y:0, G:0 },
+      Y: { R:0, Y:0, G:0 },
+      G: { R:0, Y:0, G:0 },
+    },
+  };
+}
+
+const MARKOV_AGG = {
+  A: createMarkovAggregateStore(),
+  A_convencional: createMarkovAggregateStore(),
+  A_inteligente: createMarkovAggregateStore(),
+};
+
+function resetMarkovAggregate() {
+  Object.keys(MARKOV_AGG).forEach(function(key) {
+    MARKOV_AGG[key].obs = 0;
+    MARKOV_AGG[key].last = null;
+    ['R','Y','G'].forEach(function(s) {
+      MARKOV_AGG[key].visits[s] = 0;
+      ['R','Y','G'].forEach(function(t) {
+        MARKOV_AGG[key].trans[s][t] = 0;
+      });
+    });
+  });
+}
+
+function recordMarkovAggregate(key, state) {
+  var store = MARKOV_AGG[key];
+  if (!store || store.visits[state] === undefined) return;
+  store.visits[state] += 1;
+  store.obs += 1;
+  if (store.last && store.trans[store.last] && store.trans[store.last][state] !== undefined) {
+    store.trans[store.last][state] += 1;
+  }
+  store.last = state;
+}
+
+function getMarkovAggregateStats(key) {
+  var store = MARKOV_AGG[key] || MARKOV_AGG.A;
+  var total = Math.max(store.obs, 1);
+  var steady = {
+    R: store.visits.R / total,
+    Y: store.visits.Y / total,
+    G: store.visits.G / total,
+  };
+  var matrix = { R:{R:0,Y:0,G:0}, Y:{R:0,Y:0,G:0}, G:{R:0,Y:0,G:0} };
+  ['R','Y','G'].forEach(function(from) {
+    var rowTot = store.trans[from].R + store.trans[from].Y + store.trans[from].G;
+    ['R','Y','G'].forEach(function(to) {
+      matrix[from][to] = rowTot > 0 ? store.trans[from][to] / rowTot : 0;
+    });
+  });
+  return {
+    obs: store.obs,
+    steady: steady,
+    matrix: matrix,
+  };
+}
 
 // ── Modelo IDM de seguimiento vehicular ──
 // Retorna aceleración del vehículo dado el espacio al líder y su velocidad
@@ -841,14 +932,38 @@ function drawTL(ctx, x, y, phase, type='normal') {
     ctx.fill(); ctx.shadowBlur=0;
     // ONLY arrow_uturn type gets a turn arrow on the green light — all others just show plain circle
     if (type === 'arrow_uturn' && phase===c && c==='G') {
-      ctx.save(); ctx.translate(x, ly);
-      ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.lineWidth=2.2; ctx.lineCap='round'; ctx.lineJoin='round';
+      ctx.save();
+      ctx.translate(x, ly);
+      ctx.lineCap='round';
+      ctx.lineJoin='round';
+
+      const drawUTurnStroke = function(strokeStyle, lineWidth) {
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        ctx.moveTo(sz * 0.18, -sz * 0.24);
+        ctx.lineTo(sz * 0.18, -sz * 0.02);
+        ctx.quadraticCurveTo(sz * 0.18, sz * 0.28, -sz * 0.04, sz * 0.28);
+        ctx.lineTo(-sz * 0.10, sz * 0.28);
+        ctx.quadraticCurveTo(-sz * 0.26, sz * 0.28, -sz * 0.26, sz * 0.12);
+        ctx.stroke();
+      };
+
+      drawUTurnStroke('rgba(4,10,6,0.92)', 3.6);
+      drawUTurnStroke('rgba(236,255,244,0.98)', 1.8);
+
+      ctx.fillStyle = 'rgba(236,255,244,0.98)';
       ctx.beginPath();
-      ctx.moveTo(-sz*0.30, -sz*0.05); ctx.lineTo(sz*0.08, -sz*0.05);
-      ctx.quadraticCurveTo(sz*0.28, -sz*0.05, sz*0.28, sz*0.15);
-      ctx.lineTo(sz*0.28, sz*0.22); ctx.stroke();
-      ctx.fillStyle='rgba(0,0,0,0.9)';
-      ctx.beginPath(); ctx.moveTo(sz*0.28,sz*0.36); ctx.lineTo(sz*0.15,sz*0.18); ctx.lineTo(sz*0.41,sz*0.18); ctx.closePath(); ctx.fill();
+      ctx.moveTo(-sz * 0.44, sz * 0.12);
+      ctx.lineTo(-sz * 0.18, -sz * 0.02);
+      ctx.lineTo(-sz * 0.18, sz * 0.26);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255,255,255,0.20)';
+      ctx.beginPath();
+      ctx.arc(sz * 0.05, -sz * 0.18, sz * 0.08, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
     } else if (phase===c) {
       // Brillo simple en cualquier luz encendida — sin flecha
@@ -857,6 +972,62 @@ function drawTL(ctx, x, y, phase, type='normal') {
     }
   });
   ctx.restore();
+}
+
+function drawSignalMarker(ctx, x, y, code, accent, dx, dy) {
+  const mx = x + dx;
+  const my = y + dy;
+  ctx.save();
+  ctx.font = 'bold 8px JetBrains Mono,monospace';
+  const boxW = Math.max(24, Math.ceil(ctx.measureText(code).width) + 14);
+  ctx.fillStyle = 'rgba(7,10,16,0.92)';
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1;
+  roundRect(ctx, mx - boxW/2, my - 8, boxW, 16, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = accent;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(code, mx, my + 0.5);
+  ctx.restore();
+}
+
+function getSignalRigLayout(W, H) {
+  const hCY = GEO.hCY * H;
+  const hHH = GEO.hHH * H;
+  const vCX = GEO.vCX * W;
+  const vWW = GEO.vWW * W;
+  const sAx = GEO.stopAx * W;
+  const sByY = GEO.stopBy * H;
+  const sCx = GEO.stopCx * W;
+  const sDy = GEO.stopDy * H;
+  const iLeft = vCX - vWW / 2;
+  const iRight = vCX + vWW / 2;
+  const iTop = hCY - hHH / 2;
+  const iBot = hCY + hHH / 2;
+
+  return {
+    iLeft: iLeft,
+    iRight: iRight,
+    iTop: iTop,
+    iBot: iBot,
+    topArmY: iTop - 37,
+    bottomArmY: iBot + 37,
+    poles: {
+      nw: { x: iLeft - 6, y: iTop },
+      ne: { x: iRight + 6, y: iTop },
+      sw: { x: iLeft - 6, y: iBot },
+      se: { x: iRight + 6, y: iBot },
+    },
+    heads: {
+      A:  { x: sAx - 18,         y: iTop - 22 },
+      D:  { x: sAx + 16,         y: iTop - 22 },
+      BN: { x: vCX + vWW * 0.12, y: sByY - 18 },
+      BS: { x: vCX - vWW * 0.12, y: sDy + 18 },
+      C:  { x: sCx + 16,         y: iBot + 22 },
+    },
+  };
 }
 
 // ── Dibujar vía ──
@@ -970,29 +1141,21 @@ function drawRoad() {
   ctx.font='bold 8px JetBrains Mono,monospace'; ctx.fillStyle='rgba(60,90,120,0.60)';
   // Etiquetas de carril (alineadas a la derecha cerca de la intersección)
   ctx.textAlign='right';
-  ctx.fillText('↱ GIRO DER / U', GEO.stopAx*W - 8, hCY - laneH*0.5 + 3);
-  ctx.fillText('→ RECTO', GEO.stopAx*W - 8, hCY - laneH*1.5 + 3);
-  ctx.fillText('→ RECTO', GEO.stopAx*W - 8, hCY - laneH*2.5 + 3);
+  ctx.fillText('A · GIRO U', GEO.stopAx*W - 8, hCY - laneH*0.5 + 3);
+  ctx.fillText('D · RECTO', GEO.stopAx*W - 8, hCY - laneH*1.5 + 3);
+  ctx.fillText('D · RECTO', GEO.stopAx*W - 8, hCY - laneH*2.5 + 3);
   ctx.textAlign='left';
-  ctx.fillText('← RECTO · Carriles inferiores (der→izq)', 10, hCY+hHH/2+13);
+  ctx.fillText('C · RECTO der→izq', 10, hCY+hHH/2+13);
   ctx.save(); ctx.translate(vCX+vWW/2+6, 14);
-  ctx.fillText('↓ CALLE EL BOSQUE', 0, 0); ctx.restore();
+  ctx.fillText('B · CALLE EL BOSQUE', 0, 0); ctx.restore();
   ctx.textAlign='left';
 
   // ── Postes semafóricos — 4 esquinas de la intersección ──
-  const semAX = GEO.semAx*W;
-  const semDX = GEO.semDx*W;
-  const semCX = GEO.semCx*W;
-  const semBX = vCX - vWW/2 - 30;
-  const semBY = GEO.semBy*H;
-  const roadTop = hCY - hHH/2;
-  const roadBot = hCY + hHH/2;
-
-  // ── Postes de esquina: 4 postes de concreto en las esquinas de la intersección ──
-  const iLeft  = vCX - vWW/2;   // borde izquierdo de la calle transversal
-  const iRight = vCX + vWW/2;   // borde derecho de la calle transversal
-  const iTop   = hCY - hHH/2;   // borde superior de la avenida
-  const iBot   = hCY + hHH/2;   // borde inferior de la avenida
+  const rig = getSignalRigLayout(W, H);
+  const iLeft  = rig.iLeft;
+  const iRight = rig.iRight;
+  const iTop   = rig.iTop;
+  const iBot   = rig.iBot;
 
   // Auxiliar: dibujar un poste realista con brazo
   function drawPole(px, py, armDx, armDy, armLen) {
@@ -1019,49 +1182,27 @@ function drawRoad() {
     }
   }
 
-  // POSTE NW (noreste) — top-left corner (serves Sem D: LTR straight, & Sem B: TTB)
-  // Pole at NW corner, arm goes right over LTR lanes → gantry
-  drawPole(iLeft - 6, iTop, 0, -38, 0);
-  // Pórtico vertical desde poste NW hacia la derecha
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=3;
-  ctx.beginPath(); ctx.moveTo(iLeft-6, iTop-37); ctx.lineTo(semDX+12, iTop-37); ctx.stroke();
-  ctx.strokeStyle='#28405c'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(iLeft-6, iTop-37); ctx.lineTo(semDX+12, iTop-37); ctx.stroke();
-  // Cable colgantes for Sem D (straight, top 2 lanes)
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=2.5;
-  ctx.beginPath(); ctx.moveTo(semDX, iTop-37); ctx.lineTo(semDX, iTop-22); ctx.stroke();
-  // Cable colgante for Sem A (giro, bottom LTR lane) — second arm from pole at left
-  ctx.beginPath(); ctx.moveTo(semAX, iTop-37); ctx.lineTo(semAX, iTop-22); ctx.stroke();
+  function drawMastToHead(pole, head, armY) {
+    ctx.strokeStyle='#1e2c40'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(pole.x, armY); ctx.lineTo(head.x, armY); ctx.stroke();
+    ctx.strokeStyle='#28405c'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(pole.x, armY); ctx.lineTo(head.x, armY); ctx.stroke();
+    ctx.strokeStyle='#1e2c40'; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.moveTo(head.x, armY); ctx.lineTo(head.x, head.y); ctx.stroke();
+  }
 
-  // POSTE NE (noreste) — top-right corner (supports Sem B going down from cross-street)
-  drawPole(iRight + 6, iTop, 0, -38, 0);
-  // Brazo corto hacia la izquierda para Sem B (TTB): arm extends left over left lane of cross-street
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=3;
-  ctx.beginPath(); ctx.moveTo(iRight+6, iTop-37); ctx.lineTo(semBX, iTop-37); ctx.stroke();
-  ctx.strokeStyle='#28405c'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(iRight+6, iTop-37); ctx.lineTo(semBX, iTop-37); ctx.stroke();
-  // Cable colgante para Sem B
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=2.5;
-  ctx.beginPath(); ctx.moveTo(semBX, iTop-37); ctx.lineTo(semBX, semBY); ctx.stroke();
+  drawPole(rig.poles.nw.x, rig.poles.nw.y, 0, -38, 0);
+  drawPole(rig.poles.ne.x, rig.poles.ne.y, 0, -38, 0);
+  drawPole(rig.poles.sw.x, rig.poles.sw.y, 0, 38, 0);
+  drawPole(rig.poles.se.x, rig.poles.se.y, 0, 38, 0);
 
-  // POSTE SW (suroeste) — bottom-left corner (Sem C: RTL, faces cars coming from right)
-  drawPole(iLeft - 6, iBot, 0, 38, 0);
-  // Brazo hacia la derecha hasta posición Sem C (so C is visible to RTL drivers approaching from right)
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=3;
-  ctx.beginPath(); ctx.moveTo(iLeft-6, iBot+37); ctx.lineTo(semCX, iBot+37); ctx.stroke();
-  ctx.strokeStyle='#28405c'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(iLeft-6, iBot+37); ctx.lineTo(semCX, iBot+37); ctx.stroke();
-  // Cable colgante hasta Sem C
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=2.5;
-  ctx.beginPath(); ctx.moveTo(semCX, iBot+37); ctx.lineTo(semCX, iBot+22); ctx.stroke();
-
-  // POSTE SE (sureste) — bottom-right corner (Sem for BTT vertical)
-  drawPole(iRight + 6, iBot, 0, 38, 0);
-  // Brazo hacia la izquierda para semáforo BTT
-  ctx.strokeStyle='#1e2c40'; ctx.lineWidth=3;
-  ctx.beginPath(); ctx.moveTo(iRight+6, iBot+37); ctx.lineTo(vCX, iBot+37); ctx.stroke();
-  ctx.strokeStyle='#28405c'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(iRight+6, iBot+37); ctx.lineTo(vCX, iBot+37); ctx.stroke();
+  // Distribución del mobiliario como cruce real:
+  // A en el costado del giro, D arriba del frente, B separado por aproximaciones y C aislado en su esquina.
+  drawMastToHead(rig.poles.nw, rig.heads.A, rig.topArmY);
+  drawMastToHead(rig.poles.nw, rig.heads.D, rig.topArmY);
+  drawMastToHead(rig.poles.ne, rig.heads.BN, rig.topArmY);
+  drawMastToHead(rig.poles.sw, rig.heads.BS, rig.bottomArmY);
+  drawMastToHead(rig.poles.se, rig.heads.C, rig.bottomArmY);
 }
 
 // ── Renderizar frame ──
@@ -1071,6 +1212,7 @@ function renderFrame() {
   ctx.clearRect(0,0,W,H);
   const hCY = GEO.hCY*H, hHH = GEO.hHH*H;
   const vCX = GEO.vCX*W, vWW = GEO.vWW*W;
+  const rig = getSignalRigLayout(W, H);
 
   // Mapa de calor de peligro de cola en carril de vuelta en U
   if (SIM.qA > 8) {
@@ -1085,79 +1227,70 @@ function renderFrame() {
   }
   // Resplandor verde en la vía cuando el semáforo está en VERDE
   if (SIM.phA === 'G') {
-    const grd = ctx.createRadialGradient(GEO.semAx*W, hCY-hHH/4, 0, GEO.semAx*W, hCY-hHH/4, 110);
+    const grd = ctx.createRadialGradient(rig.heads.A.x, hCY-hHH/4, 0, rig.heads.A.x, hCY-hHH/4, 110);
     grd.addColorStop(0,'rgba(0,223,118,0.055)'); grd.addColorStop(1,'transparent');
-    ctx.fillStyle=grd; ctx.fillRect(GEO.semAx*W-110,hCY-hHH/2,220,hHH/2);
+    ctx.fillStyle=grd; ctx.fillRect(rig.heads.A.x-110,hCY-hHH/2,220,hHH/2);
   }
 
   const isSmrt = SIM.mode==='inteligente';
   const tlType = isSmrt ? 'smart' : 'normal';
   const laneH = hHH/6;
+  const drawSignalOverlay = function() {
+    drawTL(ctx, rig.heads.D.x,  rig.heads.D.y,  SIM.phD, tlType);
+    drawTL(ctx, rig.heads.A.x,  rig.heads.A.y,  SIM.phA, isSmrt ? 'smart' : 'arrow_uturn');
+    drawTL(ctx, rig.heads.BN.x, rig.heads.BN.y, SIM.phB, tlType);
+    drawTL(ctx, rig.heads.BS.x, rig.heads.BS.y, SIM.phB, tlType);
+    drawTL(ctx, rig.heads.C.x,  rig.heads.C.y,  SIM.phC, tlType);
 
-  // ── TOP: horizontal avenue semaphores (A+D phase) ──
-  // Sem D — straight LTR (top 2 lanes) — left of intersection, above road
-  drawTL(ctx, GEO.semDx*W,  hCY-hHH/2-22, SIM.phD, tlType);
-  // Sem A — U-turn/giro (bottom LTR lane) — further left, arrow only
-  drawTL(ctx, GEO.semAx*W,  hCY-hHH/2-22, SIM.phA, isSmrt?'smart':'arrow_uturn');
+    drawSignalMarker(ctx, rig.heads.A.x,  rig.heads.A.y,  'A', '#ffbe2e', -26, -18);
+    drawSignalMarker(ctx, rig.heads.D.x,  rig.heads.D.y,  'D', '#30c2ff',  26, -18);
+    drawSignalMarker(ctx, rig.heads.BN.x, rig.heads.BN.y, 'B', '#00df76',  22, -16);
+    drawSignalMarker(ctx, rig.heads.C.x,  rig.heads.C.y,  'C', '#8fc8ff',  26,  16);
 
-  // ── LEFT: vertical street semaphores (B phase) ──
-  // Sem B_TTB — faces cars coming from TOP (visible left of street, at top of intersection)
-  drawTL(ctx, vCX-vWW/2-18, GEO.semBy*H,  SIM.phB, tlType);
-  // Sem B_BTT — faces cars coming from BOTTOM (visible right of street, at bottom of intersection)
-  drawTL(ctx, vCX+vWW/2+18, hCY+hHH/2+22, SIM.phB, tlType);
+    if (isSmrt) {
+      ctx.save();
+      const cams = [
+        {x: rig.heads.A.x,  y: rig.heads.A.y,  ang: Math.PI/2,  col:'rgba(30,176,255,0.10)'},
+        {x: rig.heads.D.x,  y: rig.heads.D.y,  ang: Math.PI/2,  col:'rgba(30,176,255,0.10)'},
+        {x: rig.heads.C.x,  y: rig.heads.C.y,  ang: -Math.PI/2, col:'rgba(30,176,255,0.10)'},
+        {x: rig.heads.BN.x, y: rig.heads.BN.y, ang: Math.PI,    col:'rgba(30,176,255,0.10)'},
+        {x: rig.heads.BS.x, y: rig.heads.BS.y, ang: 0,          col:'rgba(30,176,255,0.10)'},
+      ];
+      cams.forEach(c => {
+        const fov=0.55, len=55;
+        ctx.beginPath();
+        ctx.moveTo(c.x, c.y);
+        ctx.arc(c.x, c.y, len, c.ang-fov, c.ang+fov);
+        ctx.closePath();
+        ctx.fillStyle=c.col; ctx.fill();
+      });
+      ctx.setLineDash([4,4]);
+      ctx.strokeStyle='rgba(30,176,255,0.25)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(rig.heads.A.x, rig.heads.A.y); ctx.lineTo(rig.heads.D.x, rig.heads.D.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(rig.heads.BN.x, rig.heads.BN.y); ctx.lineTo(rig.heads.BS.x, rig.heads.BS.y); ctx.stroke();
+      ctx.setLineDash([]);
+      const qvs = VEHS.filter(v => v.state==='queued');
+      qvs.forEach(v => {
+        ctx.beginPath(); ctx.arc(v.x, v.y, v.wid*0.8+2, 0, Math.PI*2);
+        ctx.strokeStyle='rgba(30,176,255,0.6)'; ctx.lineWidth=1.5; ctx.stroke();
+      });
+      const totalQ = SIM.qA+SIM.qB+SIM.qC+SIM.qD;
+      const density = Math.min(1, totalQ/40);
+      const bx=W-120, by2=8, bw2=110, bh2=10;
+      ctx.fillStyle='rgba(10,15,22,0.75)'; roundRect(ctx,bx-4,by2-2,bw2+8,bh2+4,3); ctx.fill();
+      const dc = density>0.7?'#ff2d50':density>0.4?'#ffbe2e':'#00df76';
+      ctx.fillStyle=dc; ctx.fillRect(bx, by2, bw2*density, bh2);
+      ctx.strokeStyle='rgba(30,176,255,0.4)'; ctx.lineWidth=1; ctx.strokeRect(bx, by2, bw2, bh2);
+      ctx.fillStyle='rgba(180,210,255,0.85)'; ctx.font='bold 7px JetBrains Mono,monospace';
+      ctx.textAlign='left'; ctx.fillText('DENSIDAD: '+Math.round(density*100)+'%  Q='+totalQ, bx+2, by2-3);
+      const phaseInfo = SIM.phA==='G' ? 'FASE A+D' : SIM.phB==='G' ? 'FASE B+C' : 'TRANS';
+      ctx.fillStyle='rgba(30,176,255,0.9)'; ctx.font='bold 8px JetBrains Mono,monospace';
+      ctx.textAlign='right'; ctx.fillText('IA '+phaseInfo, W-6, 30);
+      ctx.restore();
+    }
+  };
 
-  // ── BOTTOM: RTL horizontal semaphore (C phase) ──
-  // Sem C — faces cars coming from RIGHT (RTL) — posted right side of intersection, below road
-  drawTL(ctx, GEO.semCx*W,  hCY+hHH/2+22, SIM.phC, tlType);
-
-  // ── Superposiciones modo inteligente: cámaras, sensores, líneas de sincronía ──
   if (isSmrt) {
-    ctx.save();
-    // Conos de campo de visión de cámaras
-    const cams = [
-      {x: GEO.semAx*W,  y: hCY-hHH/2-22,  ang: Math.PI/2,  col:'rgba(30,176,255,0.10)'},
-      {x: GEO.semDx*W,  y: hCY-hHH/2-22,  ang: Math.PI/2,  col:'rgba(30,176,255,0.10)'},
-      {x: GEO.semCx*W,  y: hCY+hHH/2+22,  ang: -Math.PI/2, col:'rgba(30,176,255,0.10)'},
-      {x: vCX-vWW/2-30, y: GEO.semBy*H,   ang: 0,          col:'rgba(30,176,255,0.10)'},
-    ];
-    cams.forEach(c => {
-      const fov=0.55, len=55;
-      ctx.beginPath();
-      ctx.moveTo(c.x, c.y);
-      ctx.arc(c.x, c.y, len, c.ang-fov, c.ang+fov);
-      ctx.closePath();
-      ctx.fillStyle=c.col; ctx.fill();
-    });
-    // Líneas de sincronización entre semáforos vinculados
-    ctx.setLineDash([4,4]);
-    ctx.strokeStyle='rgba(30,176,255,0.25)'; ctx.lineWidth=1;
-    // A ↔ D (same phase — LTR gantry)
-    ctx.beginPath(); ctx.moveTo(GEO.semAx*W, hCY-hHH/2-22); ctx.lineTo(GEO.semDx*W, hCY-hHH/2-22); ctx.stroke();
-    // B ↔ C (same phase — vertical & RTL)
-    ctx.beginPath(); ctx.moveTo(vCX-vWW/2-30, GEO.semBy*H); ctx.lineTo(GEO.semCx*W, hCY+hHH/2+22); ctx.stroke();
-    ctx.setLineDash([]);
-    // Puntos de detección vehicular (resaltar vehículos en cola)
-    const qvs = VEHS.filter(v => v.state==='queued');
-    qvs.forEach(v => {
-      ctx.beginPath(); ctx.arc(v.x, v.y, v.wid*0.8+2, 0, Math.PI*2);
-      ctx.strokeStyle='rgba(30,176,255,0.6)'; ctx.lineWidth=1.5; ctx.stroke();
-    });
-    // Barra de análisis de densidad modo inteligente (esquina superior derecha del canvas)
-    const totalQ = SIM.qA+SIM.qB+SIM.qC+SIM.qD;
-    const density = Math.min(1, totalQ/40);
-    const bx=W-120, by2=8, bw2=110, bh2=10;
-    ctx.fillStyle='rgba(10,15,22,0.75)'; roundRect(ctx,bx-4,by2-2,bw2+8,bh2+4,3); ctx.fill();
-    const dc = density>0.7?'#ff2d50':density>0.4?'#ffbe2e':'#00df76';
-    ctx.fillStyle=dc; ctx.fillRect(bx, by2, bw2*density, bh2);
-    ctx.strokeStyle='rgba(30,176,255,0.4)'; ctx.lineWidth=1; ctx.strokeRect(bx, by2, bw2, bh2);
-    ctx.fillStyle='rgba(180,210,255,0.85)'; ctx.font='bold 7px JetBrains Mono,monospace';
-    ctx.textAlign='left'; ctx.fillText('DENSIDAD: '+Math.round(density*100)+'%  Q='+totalQ, bx+2, by2-3);
-    // Indicador de sincronía del temporizador de fase
-    const phaseInfo = SIM.phA==='G' ? 'FASE A+D' : SIM.phB==='G' ? 'FASE B+C' : 'TRANS';
-    ctx.fillStyle='rgba(30,176,255,0.9)'; ctx.font='bold 8px JetBrains Mono,monospace';
-    ctx.textAlign='right'; ctx.fillText('🧠 '+phaseInfo, W-6, 30);
-    ctx.restore();
-    // Hide conv badge in intel mode
     var bdgI = document.getElementById('uturn-badge');
     if (bdgI) bdgI.style.display = 'none';
     var lblI = document.getElementById('uturn-label');
@@ -1192,22 +1325,23 @@ function renderFrame() {
   // ── Sem A queue label — VUELTA EN U (PROBLEMA CENTRAL) ──
   {
     const qColor = SIM.qA > 20 ? 'rgba(255,45,80,1)' : SIM.qA > 10 ? 'rgba(255,190,46,1)' : 'rgba(0,223,118,0.9)';
-    const labelX = qSAx - 10;
-    const labelY = hCY - laneH2*0.5;
-    // Conteo cola vuelta-U: texto pequeño SOBRE la vía, sin solapar autos
-    // Dibujado sobre el borde superior de la vía (hCY - hHH/2 - 6)
+    const labelX = qSAx - 54;
+    const labelY = hCY - laneH2 * 0.45;
+    // Conteo de giro U: anclado a la izquierda de la línea de parada
+    // para no invadir la cabeza semafórica ni el brazo superior.
     if (SIM.qA > 0) {
-      var aboveRoad = hCY - hHH/2 - 8;
       ctx.fillStyle = qColor;
       ctx.font = 'bold 9px JetBrains Mono,monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText('A: ' + SIM.qA, labelX, aboveRoad);
+      ctx.textAlign = 'left';
+      ctx.fillText('A Q:' + SIM.qA, labelX, labelY);
     }
   }
   // Sem D queue label (top 2 LTR lanes)
   if (SIM.qD > 0) {
-    ctx.fillStyle='rgba(255,190,46,0.9)'; ctx.font='bold 9px JetBrains Mono,monospace'; ctx.textAlign='right';
-    ctx.fillText('D Q:'+SIM.qD, qSAx - 8, hCY - hHH/2 + 10);
+    ctx.fillStyle='rgba(255,190,46,0.9)';
+    ctx.font='bold 9px JetBrains Mono,monospace';
+    ctx.textAlign='left';
+    ctx.fillText('D Q:'+SIM.qD, qSAx - 54, hCY - hHH/2 + 18);
   }
   // Sem C queue label (RTL)
   if (SIM.qC > 0) {
@@ -1218,6 +1352,9 @@ function renderFrame() {
     ctx.fillStyle='rgba(30,176,255,0.9)'; ctx.font='bold 9px JetBrains Mono,monospace'; ctx.textAlign='left';
     ctx.fillText('Q:'+SIM.qB, vCX+vWW/2+5, GEO.stopBy*H - 12);
   }
+
+  // Pintar semáforos y brazos al final mantiene el mobiliario vial por encima de los vehículos.
+  drawSignalOverlay();
 }
 
 // ── Temporización adaptativa ──
@@ -1306,6 +1443,7 @@ function tick(ts) {
       SIM.phC='G'; SIM.tmC=tg; SIM.mxC=tg;
       SIM.phD='G'; SIM.tmD=tg; SIM.mxD=tg;
       SIM.cycles++; SIM.sCycA=0;
+      getModeRunStats(SIM.mode).cycles++;
       addLog('G','▶ FASE 1: A+C+D → VERDE (horizontal) '+tg+'s');
     } else if (SIM.phA === 'G') {
       // Verde horizontal → amarillo
@@ -1384,10 +1522,9 @@ function tick(ts) {
     SIM._lastSnap = Math.floor(SIM.t / 2);
     // Markov: registrar estados actuales
     MARKOV.record(SIM.phA, SIM.phB, SIM.phC, SIM.phD);
-    const all=[...SIM.wtA,...SIM.wtB,...SIM.wtC,...SIM.wtD];
-    const wq = all.length>0 ? parseFloat((all.reduce((a,b)=>a+b,0)/all.length).toFixed(2)) : 0;
-    const tp = SIM.t>0 ? Math.round(((SIM.sA+SIM.sB+SIM.sC+SIM.sD)/SIM.t)*3600) : 0;
-    const q  = SIM.qA+SIM.qB+SIM.qC+SIM.qD;
+    const wq = SIM.wtA.length>0 ? parseFloat((SIM.wtA.reduce((a,b)=>a+b,0)/SIM.wtA.length).toFixed(2)) : 0;
+    const tp = SIM.t>0 ? Math.round((SIM.sA/SIM.t)*3600) : 0;
+    const q  = SIM.qA;
     if (SIM.mode==='convencional') {
       SIM.cmpWqConv.push(wq); if(SIM.cmpWqConv.length>SIM.CMAX2) SIM.cmpWqConv.shift();
       SIM.cmpTpConv.push(tp); if(SIM.cmpTpConv.length>SIM.CMAX2) SIM.cmpTpConv.shift();
@@ -1481,14 +1618,13 @@ function updateUI() {
   const fD=document.getElementById('sd-f'); fD.style.width=pD+'%';
   fD.style.background=SIM.phD==='G'?'var(--G)':SIM.phD==='Y'?'var(--Y)':'var(--R)';
   document.getElementById('sd-tl').textContent=Math.max(0,SIM.tmD).toFixed(1)+' s rest.';
-  const all=[...SIM.wtA,...SIM.wtB,...SIM.wtC,...SIM.wtD];
-  const wq=all.length>0?(all.reduce((a,b)=>a+b,0)/all.length).toFixed(2):'0.00';
+  const wq=SIM.wtA.length>0?(SIM.wtA.reduce((a,b)=>a+b,0)/SIM.wtA.length).toFixed(2):'0.00';
   // Resaltar cuando la cola de vuelta en U es crítica
   var qaEl = document.getElementById('sa-q');
   if (qaEl) {
     qaEl.style.color = SIM.qA > 20 ? 'var(--R)' : SIM.qA > 12 ? 'var(--Y)' : 'var(--G)';
     qaEl.style.fontWeight = SIM.qA > 20 ? '900' : '700';
-    if (SIM.qA > 20 && SIM.t > 10) addLog('W', '⚠ Cola A critica: '+SIM.qA+' veh (meta conv: 25-28)');
+    if (SIM.qA > 20 && SIM.t > 10) addLog('W', '⚠ Cola A critica: '+SIM.qA+' veh en la sesion actual');
   }
   const we=document.getElementById('rp-wq'); we.textContent=wq;
   if (SIM.mode==='inteligente') {
@@ -1500,13 +1636,11 @@ function updateUI() {
   }
   document.getElementById('rp-qa').textContent=SIM.mxQA;
   document.getElementById('rp-qb').textContent=SIM.mxQB;
-  var tp=SIM.t>0?Math.round(((SIM.sA+SIM.sB)/SIM.t)*3600):0;
-  var te=document.getElementById('rp-tp'); te.textContent=tp+' v/h';
+  var tp=SIM.t>0?Math.round((SIM.sA/SIM.t)*3600):0;
+  var te=document.getElementById('rp-tp'); te.textContent=tp+' v/h eq.';
   te.style.color=tp>250?'var(--G)':tp>150?'var(--Y)':'var(--R)';
-  // Mostrar delta de referencia
-  var tpRef = SIM.mode==='inteligente' ? 295 : 147;
-  var tpEl2 = document.getElementById('rp-tp-ref');
-  if (tpEl2) { tpEl2.textContent = 'META: '+ tpRef +' v/h'; tpEl2.style.color = Math.abs(tp-tpRef)<40?'var(--G)':'var(--Y)'; }
+  var tpNote=document.getElementById('rp-tp-note');
+  if (tpNote) tpNote.textContent = SIM.sA + ' veh servidos / ' + SIM.t.toFixed(1) + ' s simulados';
   document.getElementById('rp-cy').textContent=SIM.cycles;
   const avg=SIM.cycSvd.length>0?(SIM.cycSvd.reduce((a,b)=>a+b,0)/SIM.cycSvd.length).toFixed(1):'0.0';
   document.getElementById('rp-vc').textContent=avg;
@@ -1545,7 +1679,7 @@ function updateUI() {
 
     setMg1('mg1-lambda', lStr, 'var(--B)');
     setMg1('mg1-mu',     muStr, 'var(--B)');
-    setMg1('mg1-rho',    rhoV.toFixed(3) + (rhoV > 0.90 ? ' ⚠ CRÍTICO' : rhoV < 0.70 ? ' ✓ ESTABLE' : ''), rhoColor);
+    setMg1('mg1-rho',    rhoV.toFixed(3) + (rhoV > 0.90 ? ' CRITICO' : rhoV < 0.70 ? ' ESTABLE' : ''), rhoColor);
     setMg1('mg1-ts2',    Ts2.toFixed(1) + ' s²', null);
     setMg1('mg1-wq',     wqMin.toFixed(2) + ' min', wqColor);
     setMg1('mg1-lq',     Lq.toFixed(1) + ' veh', lqColor);
@@ -1554,43 +1688,24 @@ function updateUI() {
     var icEl = document.getElementById('mg1-ic');
     if (icEl) {
       var nSamples = SIM.wtA.length + SIM.wtB.length + SIM.wtC.length + SIM.wtD.length;
-      icEl.textContent = nSamples >= 30 ? '✓ IC 95% (' + nSamples + ' obs)' : 'n=' + nSamples + ' (min 30)';
+      icEl.textContent = nSamples >= 30 ? 'IC 95% OK (' + nSamples + ' obs)' : 'n=' + nSamples + ' (min 30)';
       icEl.style.color = nSamples >= 30 ? 'var(--G)' : 'var(--Y)';
     }
   })();
   // Actualizar etiqueta Wq según el modo activo
   const wqLbl=document.getElementById('wq-label');
-  if(wqLbl) wqLbl.textContent = SIM.mode==='inteligente' ? 'Wq PROMEDIO — MODO 🧠 INTEL' : 'Wq PROMEDIO — MODO ⚡ CONV';
+  if(wqLbl) wqLbl.textContent = SIM.mode==='inteligente' ? 'Wq PROMEDIO SEM A — MODO INTEL' : 'Wq PROMEDIO SEM A — MODO CONV';
   drawMini(); drawCyc(); drawCmpCharts();
-  // Verificación en vivo de objetivos (modo inteligente)
+  // Lectura viva del modo inteligente basada en la sesión actual
   if (SIM.mode==='inteligente') {
-    const allWtNow=[...SIM.wtA,...SIM.wtB,...SIM.wtC,...SIM.wtD];
-    const wqNow = allWtNow.length>0?(allWtNow.reduce((a,b)=>a+b,0)/allWtNow.length):99;
-    const tpNow = SIM.t>0?Math.round(((SIM.sA+SIM.sB+SIM.sC+SIM.sD)/SIM.t)*3600):0;
-    const qNow  = SIM.qA+SIM.qB+SIM.qC+SIM.qD;
-    const totSrv = SIM.sA+SIM.qA;
-    const rhoNow = totSrv>0?Math.min(0.99,SIM.qA/Math.max(totSrv*0.5,1)):0;
-    // Update targets with ✓/✗ and progress
-    const targets = document.querySelectorAll('#intel-targets .target-check');
-    // Inyección inline — actualizar divs meta buscando texto
-    const metaDivs = document.querySelectorAll('#intel-targets > div > div');
-    if(metaDivs.length >= 4) {
-      const checks = [wqNow<1.8, rhoNow<0.70, qNow<12, tpNow>250];
-      const vals = [wqNow.toFixed(2)+'m', rhoNow.toFixed(2), qNow+'v', tpNow+'v/h'];
-      for(let i=0;i<4;i++){
-        const bd = metaDivs[i*2+1]; // div de valor (índice 1,3,5,7 — alternando etiqueta/valor)
-        if(!bd) continue;
-        const ok = checks[i];
-        bd.style.color = ok ? 'var(--G)' : (i<3 ? 'var(--Y)' : 'var(--Y)');
-        bd.setAttribute('data-live', vals[i]);
-      }
-      // Agregar sufijo de verificación a los divs de etiqueta
-      for(let i=0;i<4;i++){
-        const ld = metaDivs[i*2];
-        if(!ld) continue;
-        ld.style.color = checks[i] ? 'var(--G)' : 'var(--tx3)';
-      }
-    }
+    var intelTg = document.getElementById('it-tg');
+    var intelTr = document.getElementById('it-tr');
+    var intelMu = document.getElementById('it-mu');
+    var intelVc = document.getElementById('it-vc');
+    if (intelTg) intelTg.textContent = adaptTGA() + ' s';
+    if (intelTr) intelTr.textContent = adaptTRA() + ' s';
+    if (intelMu) intelMu.textContent = muEff.toFixed(4) + ' v/s';
+    if (intelVc) intelVc.textContent = avg + ' veh';
   }
   // ── Actualización del panel de Cadena de Markov ──
   (function() {
@@ -1598,13 +1713,14 @@ function updateUI() {
     if (!mp) return;
 
     var hist   = MARKOV.histA;
-    var empA   = MARKOV.computeSteady(hist);
-    var matA   = hist.length > 5 ? MARKOV.computeEmpiricalMatrix(hist) : null;
+    var aggA   = getMarkovAggregateStats('A');
+    var empA   = aggA.obs > 0 ? aggA.steady : MARKOV.computeSteady(hist);
+    var matA   = aggA.obs > 5 ? aggA.matrix : null;
     var theoSt = SIM.mode === 'inteligente' ? MARKOV.steadyIntel : MARKOV.steadyConv;
     var rhoMk  = MARKOV.rhoFromSteady(empA);
     // Solo recalcular predicción cuando la fase cambia realmente (evita parpadeo)
     if (SIM.phA !== MARKOV._lastPhaseA) {
-      MARKOV._cachedPred = MARKOV.predictNext(SIM.phA, SIM.mode);
+      MARKOV._cachedPred = MARKOV.predictNext(SIM.phA, SIM.mode, matA || (SIM.mode === 'inteligente' ? MARKOV.matIntel : MARKOV.matConv));
       MARKOV._lastPhaseA = SIM.phA;
     }
     var predA = MARKOV._cachedPred;
@@ -1614,7 +1730,7 @@ function updateUI() {
     var setCol= function(id, col) { var e=document.getElementById(id); if(e) e.style.color=col; };
 
     // Conteo de observaciones
-    setM('mk-n', hist.length + ' obs');
+    setM('mk-n', (aggA.obs || hist.length) + ' obs acum.');
 
     // Barras de distribución
     setM('mk-emp-g', (empA.G*100).toFixed(1)+'%');
@@ -1701,12 +1817,6 @@ function updateUI() {
         mc.fillText(etiquetas[ci], ox + ci * celdW + celdW / 2, 11);
       });
 
-      // ── Etiqueta de eje (desde →) ──
-      mc.fillStyle = 'rgba(80,100,130,0.55)';
-      mc.font = '8px JetBrains Mono,monospace';
-      mc.textAlign = 'left';
-      mc.fillText('desde', 0, oy + celdH * 1.5);
-
       // ── Filas (estado origen) ──
       var matActual = matA || (SIM.mode === 'inteligente' ? MARKOV.matIntel : MARKOV.matConv);
 
@@ -1785,6 +1895,7 @@ function updateUI() {
   } else {
     sp.style.display='none';
   }
+  updateForecastSidebar();
 }
 
 // ── Dibujar gráficos comparativos ──
@@ -1861,16 +1972,15 @@ function drawBarChart(cvId, dataConv, dataInt) {
 
   var lastOf = function(arr) { return arr.length > 0 ? arr[arr.length-1] : null; };
   var wqC = lastOf(dataConv), wqI = lastOf(dataInt);
-
-  // Valores de referencia objetivo
-  var refC = 4.5, refI = 1.8;
-  var maxV = 6.0;
+  var values = [wqC, wqI].filter(function(v) { return v !== null && Number.isFinite(v); });
+  var maxV = values.length ? Math.max(1, Math.max.apply(null, values) * 1.25) : 1;
   var baseY = H - 22;
   var chartH = baseY - 10;
 
   // Líneas de cuadrícula en Y
   ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
-  [1.5, 3.0, 4.5, 6.0].forEach(function(v) {
+  [0.25, 0.5, 0.75, 1].forEach(function(f) {
+    var v = maxV * f;
     var y = baseY - (v / maxV) * chartH;
     ctx.beginPath(); ctx.moveTo(28, y); ctx.lineTo(W - 6, y); ctx.stroke();
     ctx.fillStyle = 'rgba(130,150,180,0.45)'; ctx.font = '6px JetBrains Mono,monospace';
@@ -1883,26 +1993,22 @@ function drawBarChart(cvId, dataConv, dataInt) {
   var xC = 32;
   var xI = xC + barW + 16;
 
-  function drawOneBar(x, val, ref, barColor, refColor, label) {
-    var bVal = (val !== null ? val : ref);
-    var bh = Math.max(2, (bVal / maxV) * chartH);
-    var by = baseY - bh;
-    var refY = baseY - (ref / maxV) * chartH;
-
-    // Línea de referencia punteada a lo ancho de la barra
-    ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, refY); ctx.lineTo(x + barW, refY); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Relleno de la barra
-    ctx.fillStyle = barColor;
-    ctx.fillRect(x, by, barW, bh);
-
-    // Valor sobre la barra
-    ctx.fillStyle = barColor;
-    ctx.font = 'bold 9px JetBrains Mono,monospace'; ctx.textAlign = 'center';
-    ctx.fillText((val !== null ? val.toFixed(1) : ref.toFixed(1)) + 'm', x + barW/2, by - 3);
+  function drawOneBar(x, val, barColor, label) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.strokeRect(x, 10, barW, chartH);
+    if (val !== null && Number.isFinite(val)) {
+      var bh = Math.max(2, (val / maxV) * chartH);
+      var by = baseY - bh;
+      ctx.fillStyle = barColor;
+      ctx.fillRect(x, by, barW, bh);
+      ctx.fillStyle = barColor;
+      ctx.font = 'bold 9px JetBrains Mono,monospace'; ctx.textAlign = 'center';
+      ctx.fillText(val.toFixed(1) + 'm', x + barW/2, by - 3);
+    } else {
+      ctx.fillStyle = 'rgba(100,130,160,0.5)';
+      ctx.font = '7px JetBrains Mono,monospace'; ctx.textAlign = 'center';
+      ctx.fillText('sin corrida', x + barW/2, baseY - 6);
+    }
 
     // Etiqueta inferior
     ctx.fillStyle = 'rgba(160,180,210,0.65)';
@@ -1910,8 +2016,8 @@ function drawBarChart(cvId, dataConv, dataInt) {
     ctx.fillText(label, x + barW/2, baseY + 9);
   }
 
-  drawOneBar(xC, wqC, refC, 'rgba(255,45,80,0.80)', null, 'CONV');
-  drawOneBar(xI, wqI, refI, 'rgba(0,223,118,0.80)', null, 'INTEL');
+  drawOneBar(xC, wqC, 'rgba(255,45,80,0.80)', 'CONV');
+  drawOneBar(xI, wqI, 'rgba(0,223,118,0.80)', 'INTEL');
 
   // Texto delta en esquina inferior derecha — sin superposición
   if (wqC !== null && wqI !== null && wqC > 0) {
@@ -1921,11 +2027,6 @@ function drawBarChart(cvId, dataConv, dataInt) {
     ctx.font = 'bold 8px JetBrains Mono,monospace';
     ctx.textAlign = 'right';
     ctx.fillText((better ? '-' : '+') + Math.abs(pct) + '%', W - 6, baseY + 9);
-  } else {
-    // Mostrar nota de referencia cuando aún no hay datos
-    ctx.fillStyle = 'rgba(100,130,160,0.4)';
-    ctx.font = '6px JetBrains Mono,monospace'; ctx.textAlign = 'center';
-    ctx.fillText('Ref: conv 4.5m  intel 1.8m', W/2, baseY + 9);
   }
 }
 
@@ -1933,74 +2034,121 @@ function drawBarChart(cvId, dataConv, dataInt) {
 function drawCmpCharts() {
   drawCmpChart('cmp-wq', SIM.cmpWqConv, SIM.cmpWqInt, '#ff2d50','#00df76', function(v){return v.toFixed(1)+'m';});
   drawBarChart('cmp-bar', SIM.cmpWqConv, SIM.cmpWqInt);
-  drawCmpChart('cmp-tp', SIM.cmpTpConv, SIM.cmpTpInt, '#ff2d50','#00df76', function(v){return v+'v/h';});
+  drawCmpChart('cmp-tp', SIM.cmpTpConv, SIM.cmpTpInt, '#ff2d50','#00df76', function(v){return v+'v/h eq.';});
   drawCmpChart('cmp-q',  SIM.cmpQConv,  SIM.cmpQInt,  '#ff2d50','#00df76', function(v){return v+'veh';});
 
-  // Actualizar panel de resumen
-  const lastOf = arr => arr.length>0 ? arr[arr.length-1] : null; // último valor de un array
-  const wqC = lastOf(SIM.cmpWqConv), wqI = lastOf(SIM.cmpWqInt);
-  const tpC = lastOf(SIM.cmpTpConv), tpI = lastOf(SIM.cmpTpInt);
-  const set = (id,v,fmt) => { const el=document.getElementById(id); if(el) el.textContent = v!==null ? fmt(v) : '--'; };
-  set('cs-wqc', wqC, v=>v.toFixed(2)+'m');
-  set('cs-wqi', wqI, v=>v.toFixed(2)+'m');
-  set('cs-tpc', tpC, v=>v+'v/h');
-  set('cs-tpi', tpI, v=>v+'v/h');
+  const cmp = getComparisonSnapshot();
+  const conv = cmp.conv;
+  const intel = cmp.intel;
+  const set = function(id, value, fmt) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = value !== null && value !== undefined && Number.isFinite(value) ? fmt(value) : '--';
+  };
+  const setDelta = function(id, baseValue, compareValue, lowerIsBetter) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!(baseValue !== null && compareValue !== null && Number.isFinite(baseValue) && Number.isFinite(compareValue) && Math.abs(baseValue) > 0.0001)) {
+      el.textContent = '--';
+      el.style.color = 'var(--tx3)';
+      return;
+    }
+    const pct = Math.round(((lowerIsBetter ? baseValue - compareValue : compareValue - baseValue) / Math.max(Math.abs(baseValue), 0.01)) * 100);
+    el.textContent = (pct >= 0 ? (lowerIsBetter ? '↓' : '↑') : (lowerIsBetter ? '↑' : '↓')) + Math.abs(pct) + '%';
+    el.style.color = pct >= 0 ? 'var(--G)' : 'var(--R)';
+  };
+  const setNeutralDelta = function(id, text, color) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = color || 'var(--tx2)';
+  };
+  const setChip = function(id, summary, accent, bg) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!summary.hasData) {
+      el.textContent = (summary.mode === 'inteligente' ? 'INTEL' : 'CONV') + ' sin corrida';
+      el.style.color = accent;
+      el.style.background = bg;
+      return;
+    }
+    const suffix = summary.markovObs > 0 ? (summary.markovObs + ' obs') : (summary.cycles + ' ciclos');
+    el.textContent = (summary.mode === 'inteligente' ? 'INTEL ' : 'CONV ') + suffix;
+    el.style.color = accent;
+    el.style.background = bg;
+  };
 
-  // Comparativa de colas
-  const lastQC = lastOf(SIM.cmpQConv), lastQI = lastOf(SIM.cmpQInt);
-  set('cs-qc', lastQC, v=>v+'veh');
-  set('cs-qi', lastQI, v=>v+'veh');
-  if (lastQC!==null && lastQI!==null && lastQC>0) {
-    const qdp = Math.round(((lastQC-lastQI)/Math.max(lastQC,1))*100);
-    const qdEl = document.getElementById('cs-qdelta');
-    if(qdEl) { qdEl.textContent = qdp>0?'↓'+qdp+'%':'↑'+Math.abs(qdp)+'%'; qdEl.style.color = qdp>0?'var(--G)':'var(--R)'; }
-  }
+  set('cs-wqc', conv.wq, function(v){ return v.toFixed(2) + 'm'; });
+  set('cs-wqi', intel.wq, function(v){ return v.toFixed(2) + 'm'; });
+  setDelta('cs-wqdelta', conv.wq, intel.wq, true);
 
-  // Delta Wq
-  const wqDeltaEl = document.getElementById('cs-wqdelta');
-  if (wqDeltaEl && wqC!==null && wqI!==null && wqC>0) {
-    const dp = Math.round(((wqC-wqI)/Math.max(wqC,0.01))*100);
-    wqDeltaEl.textContent = dp>0?'↓'+dp+'%':'↑'+Math.abs(dp)+'%';
-    wqDeltaEl.style.color = dp>0?'var(--G)':'var(--R)';
+  set('cs-tpc', conv.tp, function(v){ return Math.round(v) + 'v/h eq.'; });
+  set('cs-tpi', intel.tp, function(v){ return Math.round(v) + 'v/h eq.'; });
+  setDelta('cs-tpdelta', conv.tp, intel.tp, false);
+
+  set('cs-qc', conv.peakQ, function(v){ return Math.round(v) + 'veh'; });
+  set('cs-qi', intel.peakQ, function(v){ return Math.round(v) + 'veh'; });
+  setDelta('cs-qdelta', conv.peakQ, intel.peakQ, true);
+
+  set('cs-rhoc', conv.rho, function(v){ return v.toFixed(2); });
+  set('cs-rhoi', intel.rho, function(v){ return v.toFixed(2); });
+  setDelta('cs-rhodelta', conv.rho, intel.rho, true);
+
+  set('cs-capc', conv.capacityVehH, function(v){ return Math.round(v) + ' v/h eq.'; });
+  set('cs-capi', intel.capacityVehH, function(v){ return Math.round(v) + ' v/h eq.'; });
+  setDelta('cs-capdelta', conv.capacityVehH, intel.capacityVehH, false);
+
+  set('cs-obsc', conv.markovObs, function(v){ return Math.round(v).toString(); });
+  set('cs-obsi', intel.markovObs, function(v){ return Math.round(v).toString(); });
+  if (conv.markovObs > 0 && intel.markovObs > 0) setNeutralDelta('cs-obsdelta', 'ok', 'var(--B)');
+  else setNeutralDelta('cs-obsdelta', 'pend.', 'var(--tx3)');
+
+  setChip('rp-chip-conv', conv, 'var(--R)', 'var(--R2)');
+  setChip('rp-chip-intel', intel, 'var(--G)', 'var(--G2)');
+
+  const qaNote = document.getElementById('rp-qa-note');
+  if (qaNote) {
+    if (conv.peakQ !== null && intel.peakQ !== null) {
+      qaNote.textContent = 'Cola pico observada: conv ' + Math.round(conv.peakQ) + ' veh · intel ' + Math.round(intel.peakQ) + ' veh';
+    } else if (conv.hasData || intel.hasData) {
+      qaNote.textContent = 'Comparativa pendiente: falta una corrida registrada del ' + (conv.hasData ? 'modo inteligente' : 'modo convencional') + '.';
+    } else {
+      qaNote.textContent = 'Comparativa pendiente: ejecuta ambos modos para ver contraste observado.';
+    }
   }
-  // Delta Throughput
-  const tpDeltaEl = document.getElementById('cs-tpdelta');
-  if (tpDeltaEl && tpC!==null && tpI!==null && tpC>0) {
-    const dp = Math.round(((tpI-tpC)/Math.max(tpC,1))*100);
-    tpDeltaEl.textContent = dp>0?'↑'+dp+'%':'↓'+Math.abs(dp)+'%';
-    tpDeltaEl.style.color = dp>0?'var(--G)':'var(--R)';
-  }
-  // Comparativa de ρ (estimado desde datos actuales de la simulación)
-  const rhoCurr = parseFloat(document.getElementById('rp-rho').textContent)||0;
-  const rhoEl = document.getElementById('cs-rhoc'), rhoiEl = document.getElementById('cs-rhoi'), rhodEl = document.getElementById('cs-rhodelta');
-  if (SIM.mode==='convencional' && wqC!==null) {
-    if(rhoEl) { rhoEl.textContent = (Math.min(0.99,rhoCurr/100)).toFixed(2); rhoEl.style.color = rhoCurr>90?'var(--R)':rhoCurr>70?'var(--Y)':'var(--G)'; }
-  }
-  if (SIM.mode==='inteligente' && wqI!==null) {
-    const rhoI = Math.max(0.30, Math.min(0.80, rhoCurr/100));
-    if(rhoiEl) { rhoiEl.textContent = rhoI.toFixed(2); rhoiEl.style.color = rhoI>0.9?'var(--R)':rhoI>0.7?'var(--Y)':'var(--G)'; }
-  }
-  // Visualización del tiempo de ciclo adaptativo
-  const cycleiEl = document.getElementById('cs-cyclei');
-  if(cycleiEl && SIM.mode==='inteligente') { const ct = adaptTGA()+SIM.tY+adaptTRA()+adaptTGB()+SIM.tY; cycleiEl.textContent='~'+ct+'s'; }
 
   const wqDiffEl = document.getElementById('cs-wqdiff');
-  if (wqDiffEl && wqC!==null && wqI!==null) {
-    const pct = Math.round(((wqC-wqI)/Math.max(wqC,0.01))*100);
-    const better = pct>0;
-    wqDiffEl.textContent = better ? '🧠 -'+pct+'% tiempo espera' : (pct<0?'⚡ +'+Math.abs(pct)+'% conv mejor':'≈ igual');
-    wqDiffEl.style.background = better?'rgba(0,223,118,0.1)':'rgba(255,45,80,0.1)';
-    wqDiffEl.style.color = better?'var(--G)':'var(--R)';
-    wqDiffEl.style.border = '1px solid '+(better?'rgba(0,223,118,0.3)':'rgba(255,45,80,0.3)');
+  if (wqDiffEl) {
+    if (conv.wq !== null && intel.wq !== null && conv.wq > 0) {
+      const pct = Math.round(((conv.wq - intel.wq) / Math.max(conv.wq, 0.01)) * 100);
+      const better = pct > 0;
+      wqDiffEl.textContent = better ? 'INTEL reduce ' + pct + '% el tiempo de espera observado' : (pct < 0 ? 'CONV reduce ' + Math.abs(pct) + '% el tiempo de espera observado' : 'Empate observado en Wq');
+      wqDiffEl.style.background = better ? 'rgba(0,223,118,0.1)' : 'rgba(255,45,80,0.1)';
+      wqDiffEl.style.color = better ? 'var(--G)' : 'var(--R)';
+      wqDiffEl.style.border = '1px solid ' + (better ? 'rgba(0,223,118,0.3)' : 'rgba(255,45,80,0.3)');
+    } else {
+      wqDiffEl.textContent = 'Comparacion pendiente: solo se resumira cuando existan corridas registradas de ambos modos.';
+      wqDiffEl.style.background = 'rgba(30,176,255,0.08)';
+      wqDiffEl.style.color = 'var(--B)';
+      wqDiffEl.style.border = '1px solid rgba(30,176,255,0.28)';
+    }
   }
+
   const tpDiffEl = document.getElementById('cs-tpdiff');
-  if (tpDiffEl && tpC!==null && tpI!==null) {
-    const pct = Math.round(((tpI-tpC)/Math.max(tpC,1))*100);
-    const better = pct>0;
-    tpDiffEl.textContent = better ? '🧠 +'+pct+'% throughput' : (pct<0?'⚡ conv '+Math.abs(pct)+'% más':'≈ igual');
-    tpDiffEl.style.background = better?'rgba(0,223,118,0.1)':'rgba(255,45,80,0.1)';
-    tpDiffEl.style.color = better?'var(--G)':'var(--R)';
-    tpDiffEl.style.border = '1px solid '+(better?'rgba(0,223,118,0.3)':'rgba(255,45,80,0.3)');
+  if (tpDiffEl) {
+    if (conv.tp !== null && intel.tp !== null && conv.tp > 0) {
+      const pct = Math.round(((intel.tp - conv.tp) / Math.max(conv.tp, 1)) * 100);
+      const better = pct > 0;
+      tpDiffEl.textContent = better ? 'INTEL aumenta ' + pct + '% la tasa equivalente observada' : (pct < 0 ? 'CONV aumenta ' + Math.abs(pct) + '% la tasa equivalente observada' : 'Empate observado en tasa Sem A');
+      tpDiffEl.style.background = better ? 'rgba(0,223,118,0.1)' : 'rgba(255,45,80,0.1)';
+      tpDiffEl.style.color = better ? 'var(--G)' : 'var(--R)';
+      tpDiffEl.style.border = '1px solid ' + (better ? 'rgba(0,223,118,0.3)' : 'rgba(255,45,80,0.3)');
+    } else {
+      tpDiffEl.textContent = 'Sin rellenos ni referencias: esta tabla usa solo series registradas por la simulacion.';
+      tpDiffEl.style.background = 'rgba(30,176,255,0.08)';
+      tpDiffEl.style.color = 'var(--B)';
+      tpDiffEl.style.border = '1px solid rgba(30,176,255,0.28)';
+    }
   }
 }
 function drawMini() {
@@ -2055,18 +2203,25 @@ function addLog(type, msg) {
 function clearLog() { LOG=[]; document.getElementById('ls').innerHTML=''; }
 
 function openScorecard() {
-  const lastOf = arr => arr.length > 0 ? arr[arr.length - 1] : null;
-  const wqC = lastOf(SIM.cmpWqConv), wqI = lastOf(SIM.cmpWqInt);
-  const tpC = lastOf(SIM.cmpTpConv), tpI = lastOf(SIM.cmpTpInt);
-  const qC  = lastOf(SIM.cmpQConv),  qI  = lastOf(SIM.cmpQInt);
+  const cmp = getComparisonSnapshot();
+  const conv = cmp.conv;
+  const intel = cmp.intel;
+  const wqC = conv.wq, wqI = intel.wq;
+  const tpC = conv.tp, tpI = intel.tp;
+  const qC  = conv.peakQ, qI = intel.peakQ;
 
   const setEl = function(id, v, fmt) {
     var el = document.getElementById(id); if (!el) return;
-    el.textContent = v !== null ? fmt(v) : '--';
+    el.textContent = v !== null && v !== undefined && Number.isFinite(v) ? fmt(v) : '--';
   };
   const setDelta = function(id, vC, vI, lowerBetter) {
     var el = document.getElementById(id);
-    if (!el || vC === null || vI === null || vC === 0) return;
+    if (!el) return;
+    if (!(vC !== null && vI !== null && Number.isFinite(vC) && Number.isFinite(vI) && Math.abs(vC) > 0.0001)) {
+      el.textContent = '--';
+      el.style.color = 'var(--tx3)';
+      return;
+    }
     var pct = Math.round(((lowerBetter ? vC - vI : vI - vC) / Math.max(Math.abs(vC), 0.01)) * 100);
     var better = pct > 0;
     el.textContent = (better ? (lowerBetter ? '\u2193' : '\u2191') : (lowerBetter ? '\u2191' : '\u2193')) + Math.abs(pct) + '%';
@@ -2077,32 +2232,51 @@ function openScorecard() {
   setEl('sc-wqi', wqI, function(v) { return v.toFixed(2) + ' min'; });
   setDelta('sc-wqd', wqC, wqI, true);
 
-  setEl('sc-tpc', tpC, function(v) { return v + ' v/h'; });
-  setEl('sc-tpi', tpI, function(v) { return v + ' v/h'; });
+  setEl('sc-tpc', tpC, function(v) { return Math.round(v) + ' v/h eq.'; });
+  setEl('sc-tpi', tpI, function(v) { return Math.round(v) + ' v/h eq.'; });
   setDelta('sc-tpd', tpC, tpI, false);
 
   setEl('sc-qc', qC, function(v) { return v + ' veh'; });
   setEl('sc-qi', qI, function(v) { return v + ' veh'; });
   setDelta('sc-qd', qC, qI, true);
 
-  var qac = document.getElementById('sc-qac'); if (qac) qac.textContent = SIM.mxQA + ' veh';
-  var qai = document.getElementById('sc-qai'); if (qai) qai.textContent = (SIM.mode === 'inteligente' ? SIM.mxQA : '?') + ' veh';
-  var qbc = document.getElementById('sc-qbc'); if (qbc) qbc.textContent = SIM.mxQB + ' veh';
-  var qbi = document.getElementById('sc-qbi'); if (qbi) qbi.textContent = (SIM.mode === 'inteligente' ? SIM.mxQB : '?') + ' veh';
+  setEl('sc-qac', conv.peakQ, function(v) { return Math.round(v) + ' veh'; });
+  setEl('sc-qai', intel.peakQ, function(v) { return Math.round(v) + ' veh'; });
+  setDelta('sc-qad', conv.peakQ, intel.peakQ, true);
+  setEl('sc-qbc', conv.markovObs, function(v) { return Math.round(v) + ' obs'; });
+  setEl('sc-qbi', intel.markovObs, function(v) { return Math.round(v) + ' obs'; });
+  var qbd = document.getElementById('sc-qbd');
+  if (qbd) {
+    qbd.textContent = conv.markovObs > 0 && intel.markovObs > 0 ? 'OK' : 'PEND.';
+    qbd.style.color = conv.markovObs > 0 && intel.markovObs > 0 ? 'var(--B)' : 'var(--tx3)';
+  }
+  setEl('sc-rhoc', conv.rho, function(v) { return v.toFixed(2); });
+  setEl('sc-rhoi', intel.rho, function(v) { return v.toFixed(2); });
+  setDelta('sc-rhod', conv.rho, intel.rho, true);
+  setEl('sc-capc', conv.capacityVehH, function(v) { return Math.round(v) + ' v/h eq.'; });
+  setEl('sc-capi', intel.capacityVehH, function(v) { return Math.round(v) + ' v/h eq.'; });
+  setDelta('sc-capd', conv.capacityVehH, intel.capacityVehH, false);
 
-  var cyci = document.getElementById('sc-cyci');
-  if (cyci) { var ct = adaptTGA() + SIM.tY + adaptTRA() + adaptTGB() + SIM.tY; cyci.textContent = '~' + ct + ' s'; }
-
-  var sccc = document.getElementById('sc-cyccc'); if (sccc) sccc.textContent = SIM.cycles;
-  var scci = document.getElementById('sc-cycci'); if (scci) scci.textContent = SIM.cycles;
+  var sccc = document.getElementById('sc-cyccc'); if (sccc) sccc.textContent = conv.cycles;
+  var scci = document.getElementById('sc-cycci'); if (scci) scci.textContent = intel.cycles;
+  var sccd = document.getElementById('sc-cyccd');
+  if (sccd) {
+    if (conv.cycles > 0 && intel.cycles > 0) {
+      sccd.textContent = 'OK';
+      sccd.style.color = 'var(--B)';
+    } else {
+      sccd.textContent = 'PEND.';
+      sccd.style.color = 'var(--tx3)';
+    }
+  }
 
   var verdict = document.getElementById('sc-verdict');
   if (verdict) {
-    var hasData = wqC !== null && wqI !== null;
+    var hasData = cmp.bothObserved && wqC !== null && wqI !== null;
     if (!hasData) {
       verdict.style.background = 'rgba(30,176,255,0.08)';
       verdict.style.border = '1px solid rgba(30,176,255,0.2)';
-      verdict.innerHTML = '<span style="font-family:var(--fm);font-size:9px;color:var(--B)">Ejecuta la simulaci\u00f3n en <b>ambos modos</b> para ver la comparativa completa.<br>\u25b6 Convencional \u2192 \u25b6 Inteligente \u2192 abre COMPARAR</span>';
+      verdict.innerHTML = '<span style="font-family:var(--fm);font-size:9px;color:var(--B)">La tabla comparativa solo se completa con corridas registradas en ambos modos.<br>Si falta uno, la lectura queda en pendiente y no rellena valores.</span>';
     } else {
       var wqPct = Math.round(((wqC - wqI) / Math.max(wqC, 0.01)) * 100);
       var tpPct = Math.round(((tpI - tpC) / Math.max(tpC, 1)) * 100);
@@ -2111,10 +2285,10 @@ function openScorecard() {
       verdict.style.background = allBetter ? 'rgba(0,223,118,0.08)' : 'rgba(255,190,46,0.08)';
       verdict.style.border = '1px solid ' + (allBetter ? 'rgba(0,223,118,0.3)' : 'rgba(255,190,46,0.3)');
       if (allBetter) {
-        verdict.innerHTML = '<span style="font-family:var(--fm);font-size:11px;font-weight:700;color:var(--G)">\U0001f9e0 SISTEMA INTELIGENTE SUPERIOR EN TODOS LOS KPIs</span>'
-          + '<br><span style="font-size:8px;color:var(--tx2);font-family:var(--fm)">Wq \u2212' + wqPct + '% \u2022 Throughput +' + tpPct + '% \u2022 Colas \u2212' + qPct + '% \u2022 Modelo M/G/1 validado</span>';
+        verdict.innerHTML = '<span style="font-family:var(--fm);font-size:11px;font-weight:700;color:var(--G)">VENTAJA OBSERVADA DEL MODO INTELIGENTE</span>'
+          + '<br><span style="font-size:8px;color:var(--tx2);font-family:var(--fm)">Wq \u2212' + wqPct + '% \u2022 Tasa +' + tpPct + '% \u2022 Cola pico \u2212' + qPct + '% \u2022 Solo datos observados</span>';
       } else {
-        verdict.innerHTML = '<span style="font-family:var(--fm);font-size:9px;color:var(--Y)">Corre m\u00e1s tiempo en ambos modos para resultados m\u00e1s claros</span>';
+        verdict.innerHTML = '<span style="font-family:var(--fm);font-size:9px;color:var(--Y)">Hay corrida registrada en ambos modos, pero todavia no hay una dominancia clara en todos los KPIs observados.</span>';
       }
     }
   }
@@ -2125,7 +2299,8 @@ function exportPDF() {
   const { jsPDF } = window.jspdf;
   if (!jsPDF) { alert('jsPDF no cargado'); return; }
   const btn = document.getElementById('btnPDF');
-  btn.textContent = 'Generando...'; btn.disabled = true;
+  setButtonIconLabel('btnPDF', 'file', 'GENERANDO...');
+  btn.disabled = true;
 
   const snapCanvas = (id) => {
     try { const c = document.getElementById(id); if (c && c.width > 0) return c.toDataURL('image/png'); } catch(e) {}
@@ -2160,10 +2335,8 @@ function exportPDF() {
         .replace(/[^(\x00-\x7F)]/g,' ');
 
       // Métricas calculadas
-      const allWt  = [...SIM.wtA,...SIM.wtB,...SIM.wtC,...SIM.wtD];
-      const wqAvg  = allWt.length > 0 ? allWt.reduce((a,b)=>a+b,0)/allWt.length : 0;
-      const tpTot  = SIM.t > 0 ? Math.round(((SIM.sA+SIM.sB+SIM.sC+SIM.sD)/SIM.t)*3600) : 0;
-      const tpA    = SIM.t > 0 ? Math.round(((SIM.sA+SIM.sD)/SIM.t)*3600) : 0;
+      const wqAvg  = SIM.wtA.length > 0 ? SIM.wtA.reduce((a,b)=>a+b,0)/SIM.wtA.length : 0;
+      const tpA    = SIM.t > 0 ? Math.round((SIM.sA/SIM.t)*3600) : 0;
       const cycAvg = SIM.cycSvd.length > 0 ? (SIM.cycSvd.reduce((a,b)=>a+b,0)/SIM.cycSvd.length).toFixed(1) : '0';
       const tgA    = SIM.mode==='inteligente' ? safe('min 15s, max 45s (adaptativo)') : SIM.tGA + 's (fijo)';
       const tRA    = SIM.mode==='inteligente' ? safe('min 16s, max 49s (adaptativo)') : safe('~100s (fijo)');
@@ -2194,6 +2367,27 @@ function exportPDF() {
       const wqC = lastOf(SIM.cmpWqConv), wqI = lastOf(SIM.cmpWqInt);
       const tpC = lastOf(SIM.cmpTpConv), tpI = lastOf(SIM.cmpTpInt);
       const qC  = lastOf(SIM.cmpQConv),  qI  = lastOf(SIM.cmpQInt);
+      const pdfOperational = getOperationalMarkovContext();
+      const pdfCmp = getComparisonSnapshot();
+      const pdfForecast = getObservedPdfForecastContext({
+        scenario: SIM.scenario || 'valle',
+        months: 6,
+        nRep: 120,
+      });
+      const convSummary = pdfCmp.conv;
+      const intelSummary = pdfCmp.intel;
+      const metricText = function(summary, value, formatter, emptyText) {
+        return summary.hasData && value !== null && value !== undefined && Number.isFinite(value)
+          ? formatter(value)
+          : (emptyText || 'sin corrida registrada');
+      };
+      const deltaText = function(baseValue, compareValue, lowerBetter) {
+        if (!(baseValue !== null && compareValue !== null && Number.isFinite(baseValue) && Number.isFinite(compareValue) && Math.abs(baseValue) > 0.0001)) {
+          return 'pend.';
+        }
+        const pct = Math.round(((lowerBetter ? baseValue - compareValue : compareValue - baseValue) / Math.max(Math.abs(baseValue), 0.01)) * 100);
+        return (pct >= 0 ? (lowerBetter ? '-' : '+') : (lowerBetter ? '+' : '-')) + Math.abs(pct) + '%';
+      };
 
       //  PAGE 1 — PORTADA + RESUMEN
       fill('#07090d'); doc.rect(0,0,PW,PH,'F');
@@ -2250,22 +2444,59 @@ function exportPDF() {
         return yy + 8;
       };
 
+      const drawPdfCompareCard = (x, yy, w, h, cfg) => {
+        const values = [cfg.currentValue, cfg.compareValue].filter(v => Number.isFinite(v));
+        const maxV = Math.max(cfg.minScale || 1, values.length ? Math.max.apply(null, values) : 1);
+        const label1 = cfg.currentLabel || 'ACT';
+        const label2 = cfg.compareLabel || 'CMP';
+        const formatter = cfg.formatter || function(v) { return String(Math.round(v)); };
+        const barX = x + 16;
+        const barW = Math.max(18, w - 34);
+        const row1Y = yy + 12;
+        const row2Y = yy + 21;
+
+        fill('#09131f'); doc.roundedRect(x, yy, w, h, 2, 2, 'F');
+        draw('#18324a'); doc.setLineWidth(0.2); doc.roundedRect(x, yy, w, h, 2, 2, 'S');
+        txt('#1eb0ff'); doc.setFontSize(6.5); doc.setFont('helvetica','bold');
+        doc.text(safe(cfg.title || ''), x + 3, yy + 5);
+
+        const drawBarRow = (rowY, label, value, color) => {
+          txt('#6f86a6'); doc.setFontSize(6); doc.setFont('helvetica','bold');
+          doc.text(safe(label), x + 3, rowY + 1);
+          fill('#0d1826'); doc.rect(barX, rowY - 2.5, barW, 4, 'F');
+          if (Number.isFinite(value)) {
+            fill(color);
+            doc.rect(barX, rowY - 2.5, Math.max(1, barW * (value / maxV)), 4, 'F');
+            txt(color); doc.setFontSize(6.2); doc.setFont('helvetica','bold');
+            doc.text(safe(formatter(value)), x + w - 3, rowY + 1, { align:'right' });
+          } else {
+            txt('#4e6078'); doc.setFontSize(6); doc.setFont('helvetica','normal');
+            doc.text('sin dato', x + w - 3, rowY + 1, { align:'right' });
+          }
+        };
+
+        drawBarRow(row1Y, label1, cfg.currentValue, cfg.currentColor || '#ff2d50');
+        drawBarRow(row2Y, label2, cfg.compareValue, cfg.compareColor || '#00df76');
+
+        if (cfg.deltaText) {
+          txt(cfg.deltaColor || '#cfd8ec'); doc.setFontSize(6); doc.setFont('helvetica','bold');
+          doc.text(safe(cfg.deltaText), x + w / 2, yy + h - 3, { align:'center' });
+        }
+      };
+
       // ── 1. PARÁMETROS ──
-      y = sec('1', safe('Parametros de Simulacion y Modelo M/G/1'), y);
+      y = sec('1', safe('Base observada por modo en la sesion'), y);
       const W1=[72,32,32,48], bg0='#0d1017', bg1='#0f1520';
-      y = tableHead(['Parametro','Convencional','Inteligente','Descripcion'], W1, y);
+      y = tableHead(['Indicador','Convencional','Inteligente','Fuente'], W1, y);
       const pRows = [
-        ['Tiempo verde A (Vuelta U)', '18 s (fijo)', '15-45 s adapt.', safe('Sem A - problema central')],
-        ['Tiempo rojo A', safe('~100 s (fijo)'), '16-49 s adapt.', 'Fase B+C activa mientras A rojo'],
-        ['Tiempo verde B (vertical)', '92 s (fijo)', '12-45 s adapt.', 'Sem B - avenida principal'],
-        ['Ciclo total', '~118 s', '~35-98 s', safe('Reduccion ~45% en ciclo')],
-        ['Tasa llegadas lambda A', SIM.lA.toFixed(3)+' v/s', SIM.lA.toFixed(3)+' v/s', 'Poisson - misma demanda'],
-        ['Tasa servicio mu (conv)', '1/3.5 = 0.286 v/s', '-', 'Durante fase verde'],
-        ['Tasa servicio mu (intel)', '-', '1/2.0 = 0.500 v/s', safe('Coordinacion adaptativa +75%')],
-        ['Utilizacion rho = lambda/mu', rhoC.toFixed(3)+(rhoC>0.90?' CRITICO':''), rhoI.toFixed(3)+(rhoI<0.70?' ESTABLE':''), 'M/G/1: rho<1 para estabilidad'],
-        ['E[Ts2] - 2do momento', Ts2C.toFixed(1)+' s^2', Ts2I.toFixed(1)+' s^2', 'Pollaczek-Khinchine input'],
-        ['Wq P-K = lam*E[Ts2]/2(1-rho)', wqCalcC.toFixed(3)+' min', wqCalcI.toFixed(3)+' min', 'Formula P-K calculada'],
-        ['Lq = lambda * Wq (Little)', LqC.toFixed(2)+' veh', LqI.toFixed(2)+' veh', 'Ley de Little'],
+        ['Obs. Markov Sem A', metricText(convSummary, convSummary.markovObs, function(v) { return Math.round(v) + ' obs'; }), metricText(intelSummary, intelSummary.markovObs, function(v) { return Math.round(v) + ' obs'; }), 'Cadena empirica acumulada'],
+        ['Wq Sem A', metricText(convSummary, convSummary.wq, function(v) { return v.toFixed(2) + ' min'; }), metricText(intelSummary, intelSummary.wq, function(v) { return v.toFixed(2) + ' min'; }), 'Serie de espera observada'],
+        ['Tasa Sem A', metricText(convSummary, convSummary.tp, function(v) { return Math.round(v) + ' v/h eq.'; }), metricText(intelSummary, intelSummary.tp, function(v) { return Math.round(v) + ' v/h eq.'; }), 'Servidos / tiempo simulado'],
+        ['Cola pico Sem A', metricText(convSummary, convSummary.peakQ, function(v) { return Math.round(v) + ' veh'; }), metricText(intelSummary, intelSummary.peakQ, function(v) { return Math.round(v) + ' veh'; }), 'Maximo observado en corrida'],
+        ['Ciclos completos', metricText(convSummary, convSummary.cycles, function(v) { return Math.round(v).toString(); }), metricText(intelSummary, intelSummary.cycles, function(v) { return Math.round(v).toString(); }), 'Conteo por modo'],
+        ['rho estimado', metricText(convSummary, convSummary.rho, function(v) { return v.toFixed(3); }), metricText(intelSummary, intelSummary.rho, function(v) { return v.toFixed(3); }), 'lambda / mu efectivo'],
+        ['Convergencia pi', metricText(convSummary, convSummary.convergencePct, function(v) { return Math.round(v) + '%'; }, 'sin base Markov'), metricText(intelSummary, intelSummary.convergencePct, function(v) { return Math.round(v) + '%'; }, 'sin base Markov'), 'Estado estable emp. vs teorico'],
+        ['Capacidad Markov', metricText(convSummary, convSummary.capacityVehH, function(v) { return Math.round(v) + ' v/h eq.'; }, 'sin base Markov'), metricText(intelSummary, intelSummary.capacityVehH, function(v) { return Math.round(v) + ' v/h eq.'; }, 'sin base Markov'), 'Mu efectivo derivado'],
       ];
       pRows.forEach((r2, i) => {
         const cols = r2;
@@ -2317,8 +2548,8 @@ function exportPDF() {
       doc.text('KPIs M/G/1 - Sesion actual', M+4, y+7.5);
       const kpi4 = [
         ['Wq prom.',    wqAvg.toFixed(2)+' min', wqAvg>3?'#ff2d50':wqAvg>1.8?'#ffbe2e':'#00df76'],
-        ['TH total',    tpTot+' v/h',            tpTot>250?'#00df76':tpTot>150?'#ffbe2e':'#ff2d50'],
-        ['TH A+D',      tpA+' v/h',              '#cfd8ec'],
+        ['Tasa Sem A',  tpA+' v/h eq.',         tpA>250?'#00df76':tpA>150?'#ffbe2e':'#ff2d50'],
+        ['Sem A serv.', SIM.sA+' veh',           '#cfd8ec'],
         ['Veh/ciclo A', cycAvg+' veh',           parseFloat(cycAvg)>=12?'#00df76':parseFloat(cycAvg)>=5?'#ffbe2e':'#ff2d50'],
         ['Cola max A',  SIM.mxQA+' veh',         SIM.mxQA<=12?'#00df76':SIM.mxQA<=28?'#ffbe2e':'#ff2d50'],
         ['Cola max B',  SIM.mxQB+' veh',         '#cfd8ec'],
@@ -2349,66 +2580,164 @@ function exportPDF() {
       doc.text(safe('TrafficFlow - Tabla Comparativa Detallada'), M, 16);
       y = 30;
 
-      // ── 3. TABLA COMPARATIVA ──
-      y = sec('3', safe('Comparativa Convencional vs Inteligente - Modelo M/G/1'), y);
+      // ── 3. INDICADORES OR CON MARKOV ──
+      y = sec('3', safe('Indicadores OR con Cadena de Markov - Semaforo A'), y);
+      const markovParagraphs = [
+        'Escenario: ' + pdfOperational.scenarioLabel + ' | Obs Markov ' + pdfOperational.readiness.markovObs + '/' + pdfOperational.readiness.requiredObs +
+          ' | Ciclos ' + pdfOperational.readiness.cycles + '/' + pdfOperational.readiness.requiredCycles +
+          ' | Convergencia pi ' + pdfOperational.readiness.convergencePct + '%'
+      ];
+      if (pdfOperational.readiness.ready) {
+        if (pdfOperational.comparisonReady) {
+          markovParagraphs.push(
+            'Tiempo esperado al verde desde el estado actual: ' + Math.round(pdfOperational.current.timeToGreenSec) + ' s | ' +
+            pdfOperational.comparisonLabel + ': ' + Math.round(pdfOperational.benchmark.timeToGreenSec) + ' s | ' +
+            'Racha roja esperada: ' + Math.round(pdfOperational.current.redRunSec) + ' s -> ' + Math.round(pdfOperational.benchmark.redRunSec) + ' s'
+          );
+          markovParagraphs.push(
+            'Bloqueo estacionario: ' + Math.round(pdfOperational.current.blockedSharePct) + '% -> ' + Math.round(pdfOperational.benchmark.blockedSharePct) +
+            '% | Riesgo sin verde en 30 s: ' + Math.round(pdfOperational.current.blockedRisk30Pct) + '% -> ' + Math.round(pdfOperational.benchmark.blockedRisk30Pct) +
+            '% | Capacidad efectiva: ' + Math.round(pdfOperational.current.capacityVehH) + ' -> ' + Math.round(pdfOperational.benchmark.capacityVehH) + ' v/h eq.'
+          );
+          markovParagraphs.push(
+            'Margen capacidad-demanda: ' + formatSignedVeh(pdfOperational.current.marginVehH) + ' -> ' + formatSignedVeh(pdfOperational.benchmark.marginVehH) +
+            ' | Comparacion basada solo en corridas registradas de ambos modos dentro de la misma sesion.'
+          );
+        } else {
+          markovParagraphs.push(
+            'Tiempo esperado al verde desde el estado actual: ' + Math.round(pdfOperational.current.timeToGreenSec) + ' s | ' +
+            'Racha roja esperada: ' + Math.round(pdfOperational.current.redRunSec) + ' s | ' +
+            'Bloqueo estacionario: ' + Math.round(pdfOperational.current.blockedSharePct) + '%'
+          );
+          markovParagraphs.push(
+            'Riesgo sin verde en 30 s: ' + Math.round(pdfOperational.current.blockedRisk30Pct) + '% | ' +
+            'Capacidad efectiva observada: ' + Math.round(pdfOperational.current.capacityVehH) + ' v/h eq. | ' +
+            'Margen capacidad-demanda: ' + formatSignedVeh(pdfOperational.current.marginVehH)
+          );
+          markovParagraphs.push(
+            'No se presenta contraste con ' + pdfOperational.missingComparisonLabel +
+            ' porque no existen registros observados de ese modo en la sesion actual.'
+          );
+        }
+        markovParagraphs.push(
+          'Se usa la cadena de Markov para modelar transiciones R-A-V, estimar estado estable, tiempo esperado al verde y riesgo de bloqueo sin depender solo de promedios instantaneos.'
+        );
+      } else {
+        markovParagraphs.push(
+          'El PDF no habilita la lectura de Markov mientras la simulacion no tenga historial suficiente. Este bloqueo evita sacar conclusiones operativas sin una matriz empirica minima.'
+        );
+      }
+      const markovWrapW = CW - 10;
+      const markovLineH = 4.6;
+      const markovTopPad = 10;
+      const markovBottomPad = 5;
+      let markovBoxH = markovTopPad + markovBottomPad;
+      const markovWrapped = markovParagraphs.map(function(paragraph) {
+        const lines = doc.splitTextToSize(safe(paragraph), markovWrapW);
+        markovBoxH += lines.length * markovLineH + 1.6;
+        return lines;
+      });
+      fill('#08121e'); doc.rect(M, y-3, CW, markovBoxH, 'F');
+      draw('#1eb0ff'); doc.setLineWidth(0.2); doc.rect(M, y-3, CW, markovBoxH, 'S');
+      txt(pdfOperational.readiness.ready ? '#00df76' : '#ffbe2e');
+      doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+      doc.text(pdfOperational.readiness.ready ? 'CADENA EMPIRICA VALIDADA PARA ANALISIS OR' : 'CADENA MARKOV AUN NO VALIDADA', M+4, y+3);
+      txt('#8899bb'); doc.setFontSize(6.5); doc.setFont('helvetica','normal');
+      let markovTextY = y + 10;
+      markovWrapped.forEach(function(lines) {
+        lines.forEach(function(line) {
+          doc.text(line, M + 4, markovTextY);
+          markovTextY += markovLineH;
+        });
+        markovTextY += 1.6;
+      });
+      y += markovBoxH + 6;
 
-      const hasData = wqC!==null || wqI!==null;
-      const W3=[58,36,36,28,26];
-      y = tableHead([safe('Indicador'),'Convencional','Inteligente','Mejora','Referencia'], W3, y);
+      const orCardGap = 6;
+      const orCardW = (CW - orCardGap) / 2;
+      const orCardH = 28;
+      const currentModeLabel = pdfOperational.current.mode === 'inteligente' ? 'INTEL' : 'CONV';
+      const compareModeLabel = pdfOperational.comparisonReady
+        ? (pdfOperational.benchmark.mode === 'inteligente' ? 'INTEL' : 'CONV')
+        : '---';
+      const currentModeColor = pdfOperational.current.mode === 'inteligente' ? '#00df76' : '#ff2d50';
+      const compareModeColor = pdfOperational.comparisonReady
+        ? (pdfOperational.benchmark.mode === 'inteligente' ? '#00df76' : '#ff2d50')
+        : '#4e6078';
+      const cardDeltaText = pdfOperational.comparisonReady ? 'comparacion observada' : 'sesion actual';
 
-      // Filas comparativas — usar datos reales de simulación si existen, referencias en caso contrario
-      const rC = v => v !== null ? v : '-';
-      const rI = v => v !== null ? v : '-';
-      const pct = (c2, i2, lower) => {
-        if (c2===null||i2===null||c2===0) return '-';
-        const p = Math.round(((lower?c2-i2:i2-c2)/Math.max(c2,0.01))*100);
-        if (lower) return (p>0?'-':'+') + Math.abs(p) + '%';
-        else       return (p>0?'+':'-') + Math.abs(p) + '%';
-      };
-      const pctColor = (c2, i2, lower) => {
-        if (c2===null||i2===null||c2===0) return '#4e6078';
-        const p = Math.round(((lower?c2-i2:i2-c2)/Math.max(c2,0.01))*100);
-        return p>0?'#00df76':'#ff2d50';
-      };
+      drawPdfCompareCard(M, y, orCardW, orCardH, {
+        title: 'Tiempo esperado al verde',
+        currentLabel: currentModeLabel,
+        compareLabel: compareModeLabel,
+        currentValue: pdfOperational.current.timeToGreenSec,
+        compareValue: pdfOperational.comparisonReady ? pdfOperational.benchmark.timeToGreenSec : null,
+        currentColor: currentModeColor,
+        compareColor: compareModeColor,
+        formatter: function(v) { return Math.round(v) + ' s'; },
+        deltaText: cardDeltaText,
+      });
+      drawPdfCompareCard(M + orCardW + orCardGap, y, orCardW, orCardH, {
+        title: 'Racha roja esperada',
+        currentLabel: currentModeLabel,
+        compareLabel: compareModeLabel,
+        currentValue: pdfOperational.current.redRunSec,
+        compareValue: pdfOperational.comparisonReady ? pdfOperational.benchmark.redRunSec : null,
+        currentColor: currentModeColor,
+        compareColor: compareModeColor,
+        formatter: function(v) { return Math.round(v) + ' s'; },
+        deltaText: cardDeltaText,
+      });
+      y += orCardH + orCardGap;
+      drawPdfCompareCard(M, y, orCardW, orCardH, {
+        title: 'Riesgo sin verde en 30 s',
+        currentLabel: currentModeLabel,
+        compareLabel: compareModeLabel,
+        currentValue: pdfOperational.current.blockedRisk30Pct,
+        compareValue: pdfOperational.comparisonReady ? pdfOperational.benchmark.blockedRisk30Pct : null,
+        currentColor: currentModeColor,
+        compareColor: compareModeColor,
+        formatter: function(v) { return Math.round(v) + '%'; },
+        deltaText: cardDeltaText,
+        minScale: 100,
+      });
+      drawPdfCompareCard(M + orCardW + orCardGap, y, orCardW, orCardH, {
+        title: 'Capacidad efectiva',
+        currentLabel: currentModeLabel,
+        compareLabel: compareModeLabel,
+        currentValue: pdfOperational.current.capacityVehH,
+        compareValue: pdfOperational.comparisonReady ? pdfOperational.benchmark.capacityVehH : null,
+        currentColor: currentModeColor,
+        compareColor: compareModeColor,
+        formatter: function(v) { return Math.round(v) + ' v/h'; },
+        deltaText: cardDeltaText,
+      });
+      y += orCardH + 10;
+
+      // ── 4. TABLA COMPARATIVA ──
+      y = sec('4', safe('Comparativa observada Convencional vs Inteligente'), y);
+
+      const W3=[68,34,34,50];
+      y = tableHead([safe('Indicador'),'Convencional','Inteligente','Lectura'], W3, y);
 
       const cmpRows = [
-        // [label, convVal, intelVal, isDelta_lowerBetter, refText]
-        ['Wq espera promedio (min)',
-          wqC!==null?wqC.toFixed(2):'(sin datos)', wqI!==null?wqI.toFixed(2):'(sin datos)',
-          wqC!==null&&wqI!==null?pct(wqC,wqI,true):'Ref: -60%',
-          wqC!==null&&wqI!==null?pctColor(wqC,wqI,true):'#4e6078',
-          'Conv ~4.5m | Intel ~1.8m'],
-        ['Throughput total (veh/h)',
-          tpC!==null?String(tpC):'(sin datos)', tpI!==null?String(tpI):'(sin datos)',
-          tpC!==null&&tpI!==null?pct(tpC,tpI,false):'Ref: +100%',
-          tpC!==null&&tpI!==null?pctColor(tpC,tpI,false):'#4e6078',
-          'Conv ~147 | Intel ~295 v/h'],
-        ['Cola total maxima (veh)',
-          qC!==null?String(Math.round(qC)):'(sin datos)', qI!==null?String(Math.round(qI)):'(sin datos)',
-          qC!==null&&qI!==null?pct(qC,qI,true):'Ref: -57%',
-          qC!==null&&qI!==null?pctColor(qC,qI,true):'#4e6078',
-          'Conv 25-28 | Intel 10-12'],
-        ['Cola max Sem A - Vuelta U', String(SIM.mxQA)+' veh', '-', '-', '#4e6078', 'Conv >20 | Intel <12'],
-        ['Ciclo total semaforo', '~118 s', '~35-98 s', safe('Ref: -45%'), '#00df76', 'Imagen: 124s vs 58s'],
-        ['Tiempo verde A', '18 s (fijo)', '15-45 s', 'Adaptativo', '#00df76', safe('Imagen: 18s fijo')],
-        ['Tiempo rojo A', safe('~100 s (fijo)'), '16-49 s', safe('Ref: -60%'), '#00df76', 'Imagen: 90-100s'],
-        ['Veh/ciclo verde A', '5-6 veh', '12-15 veh', '+150%', '#00df76', 'Imagen: +100%'],
-        ['Utilizacion rho (M/G/1)', rhoC.toFixed(3)+' CRITICO', rhoI.toFixed(3)+' ESTABLE', rhoC>rhoI?'-'+Math.round((rhoC-rhoI)/rhoC*100)+'%':'--', '#00df76', 'rho=lambda/mu'],
-        ['Wq P-K calculado', wqCalcC.toFixed(2)+' min', wqCalcI.toFixed(2)+' min', pct(wqCalcC,wqCalcI,true), pctColor(wqCalcC,wqCalcI,true), 'lambda*E[Ts2]/2(1-rho)'],
-        ['Lq = lambda * Wq', LqC.toFixed(1)+' veh', LqI.toFixed(1)+' veh', pct(LqC,LqI,true), pctColor(LqC,LqI,true), 'Ley de Little'],
-        ['Tasa servicio mu efectivo', '0.286*tG/ciclo', '0.500*tG/ciclo', '+75% mu', '#00df76', '1/3.5 vs 1/2.0 v/s'],
-        ['Escenarios evaluados', '7-9AM/12-2PM/5-7PM', 'Idem', 'Todos', '#1eb0ff', 'Fase 1 levant. datos'],
-        ['Validacion estadistica', '30 rep IC 95%', '30 rep IC 95%', 'Valido', '#00df76', 'n>=30 obs'],
+        ['Wq Sem A', metricText(convSummary, convSummary.wq, function(v) { return v.toFixed(2) + ' min'; }), metricText(intelSummary, intelSummary.wq, function(v) { return v.toFixed(2) + ' min'; }), deltaText(convSummary.wq, intelSummary.wq, true), '#00df76'],
+        ['Tasa Sem A', metricText(convSummary, convSummary.tp, function(v) { return Math.round(v) + ' v/h eq.'; }), metricText(intelSummary, intelSummary.tp, function(v) { return Math.round(v) + ' v/h eq.'; }), deltaText(convSummary.tp, intelSummary.tp, false), '#00df76'],
+        ['Cola pico Sem A', metricText(convSummary, convSummary.peakQ, function(v) { return Math.round(v) + ' veh'; }), metricText(intelSummary, intelSummary.peakQ, function(v) { return Math.round(v) + ' veh'; }), deltaText(convSummary.peakQ, intelSummary.peakQ, true), '#00df76'],
+        ['rho estimado', metricText(convSummary, convSummary.rho, function(v) { return v.toFixed(3); }), metricText(intelSummary, intelSummary.rho, function(v) { return v.toFixed(3); }), deltaText(convSummary.rho, intelSummary.rho, true), '#00df76'],
+        ['Capacidad Markov', metricText(convSummary, convSummary.capacityVehH, function(v) { return Math.round(v) + ' v/h eq.'; }, 'sin base'), metricText(intelSummary, intelSummary.capacityVehH, function(v) { return Math.round(v) + ' v/h eq.'; }, 'sin base'), deltaText(convSummary.capacityVehH, intelSummary.capacityVehH, false), '#00df76'],
+        ['Obs. Markov', metricText(convSummary, convSummary.markovObs, function(v) { return Math.round(v) + ' obs'; }), metricText(intelSummary, intelSummary.markovObs, function(v) { return Math.round(v) + ' obs'; }), (convSummary.markovObs > 0 && intelSummary.markovObs > 0) ? 'ambos' : 'pend.', '#1eb0ff'],
+        ['Ciclos completos', metricText(convSummary, convSummary.cycles, function(v) { return Math.round(v).toString(); }), metricText(intelSummary, intelSummary.cycles, function(v) { return Math.round(v).toString(); }), (convSummary.cycles > 0 && intelSummary.cycles > 0) ? 'ambos' : 'pend.', '#1eb0ff'],
       ];
 
       cmpRows.forEach((r3, i) => {
-        const [label, cv, iv, dv, dc, ref] = r3;
+        const [label, cv, iv, dv, dc] = r3;
         fill(i%2===0?'#0d1017':'#0f1520'); doc.rect(M, y-3, CW, 8, 'F');
-        const vals3 = [label, cv, iv, dv, ref];
-        const cols3 = ['#8899bb','#ff5566','#00df76', dc||'#00df76','#4e6078'];
+        const vals3 = [label, cv, iv, dv];
+        const cols3 = ['#8899bb','#ff5566','#00df76', dc||'#00df76'];
         W3.forEach((w, ci) => {
           const x = M + W3.slice(0,ci).reduce((a,b)=>a+b,0);
-          txt(cols3[ci]); doc.setFontSize(ci===0||ci===4?6:7); doc.setFont('helvetica', ci>0&&ci<4?'bold':'normal');
+          txt(cols3[ci]); doc.setFontSize(ci===0?6.5:7); doc.setFont('helvetica', ci>0?'bold':'normal');
           doc.text(safe(vals3[ci]), x+2, y+1.5);
         });
         y += 8;
@@ -2417,7 +2746,134 @@ function exportPDF() {
       y += 6;
 
       // ─────────────────────────────────────
-      //  PAGE 3 — GRAFICAS
+      //  PAGE 3 — PRONOSTICO MARKOV
+      // ─────────────────────────────────────
+      doc.addPage();
+      fill('#07090d'); doc.rect(0,0,PW,PH,'F');
+      fill('#1eb0ff'); doc.rect(0,0,PW,3,'F');
+      fill('#0d1b2e'); doc.rect(0,3,PW,20,'F');
+      txt('#cfd8ec'); doc.setFontSize(11); doc.setFont('helvetica','bold');
+      doc.text(safe('TrafficFlow - Pronostico Markov de Mejora'), M, 16);
+      y = 30;
+
+      y = sec('5', safe('Pronostico 6 meses con Cadena de Markov - mejora del trafico'), y);
+      const forecastParagraphs = [
+        'Base comparativa: escenario ' + pdfForecast.scenarioLabel +
+          ' | Conv ' + (pdfForecast.convParams.markovObs || 0) + ' obs / ' + (pdfForecast.convParams.cycles || 0) + ' ciclos' +
+          ' | Intel ' + (pdfForecast.intelParams.markovObs || 0) + ' obs / ' + (pdfForecast.intelParams.cycles || 0) + ' ciclos' +
+          (pdfForecast.ready
+            ? ' | Demanda observada usada como base: ~' + pdfForecast.demandVehH + ' v/h.'
+            : ' | El pronostico solo se activa cuando ambas corridas aportan base observada suficiente.')
+      ];
+      if (pdfForecast.ready) {
+        forecastParagraphs.push(
+          'Supuesto del pronostico: durante los proximos 6 meses se mantiene la demanda observada de la sesion y se conservan las cadenas de Markov estimadas para ambos modos. No se introduce crecimiento externo ni aprendizaje artificial adicional.'
+        );
+        forecastParagraphs.push(
+          'Convencional (Monte Carlo ' + pdfForecast.nRep + ' replicas): Wq ' + pdfForecast.conv.wq.mean.toFixed(2) +
+          ' min (IC95% ' + pdfForecast.conv.wq.lo.toFixed(2) + '-' + pdfForecast.conv.wq.hi.toFixed(2) + ')' +
+          ' | Tasa ' + Math.round(pdfForecast.conv.tp.mean) + ' v/h eq. (IC95% ' + Math.round(pdfForecast.conv.tp.lo) + '-' + Math.round(pdfForecast.conv.tp.hi) + ')' +
+          ' | Cola pico ' + Math.round(pdfForecast.conv.maxQ.mean) + ' veh.'
+        );
+        forecastParagraphs.push(
+          'Inteligente (Monte Carlo ' + pdfForecast.nRep + ' replicas): Wq ' + pdfForecast.intel.wq.mean.toFixed(2) +
+          ' min (IC95% ' + pdfForecast.intel.wq.lo.toFixed(2) + '-' + pdfForecast.intel.wq.hi.toFixed(2) + ')' +
+          ' | Tasa ' + Math.round(pdfForecast.intel.tp.mean) + ' v/h eq. (IC95% ' + Math.round(pdfForecast.intel.tp.lo) + '-' + Math.round(pdfForecast.intel.tp.hi) + ')' +
+          ' | Cola pico ' + Math.round(pdfForecast.intel.maxQ.mean) + ' veh.'
+        );
+        forecastParagraphs.push(
+          'Mejora sostenida proyectada del modo inteligente frente al convencional: Wq ' +
+          (pdfForecast.deltas.wqPct !== null ? (pdfForecast.deltas.wqPct >= 0 ? '-' : '+') + Math.abs(pdfForecast.deltas.wqPct) + '%' : 'pend.') +
+          ' | Tasa ' +
+          (pdfForecast.deltas.tpPct !== null ? (pdfForecast.deltas.tpPct >= 0 ? '+' : '-') + Math.abs(pdfForecast.deltas.tpPct) + '%' : 'pend.') +
+          ' | Cola pico ' +
+          (pdfForecast.deltas.qPct !== null ? (pdfForecast.deltas.qPct >= 0 ? '-' : '+') + Math.abs(pdfForecast.deltas.qPct) + '%' : 'pend.') +
+          '. Esta proyeccion usa solo corridas registradas de ambos modos.'
+        );
+      } else {
+        forecastParagraphs.push(
+          'El PDF no incluye pronostico comparativo a 6 meses porque aun no existe base observada suficiente en ambos modos. El bloque se habilita solo cuando convencional e inteligente alcanzan cadena empirica valida, ciclos minimos y muestras de espera suficientes.'
+        );
+        forecastParagraphs.push(
+          'Estado actual de habilitacion: Conv ' + pdfForecast.convReadiness.markov.value + '/' + pdfForecast.convReadiness.markov.required +
+          ' obs Markov, ' + pdfForecast.convReadiness.cycles.value + '/' + pdfForecast.convReadiness.cycles.required + ' ciclos, ' +
+          pdfForecast.convReadiness.waits.value + '/' + pdfForecast.convReadiness.waits.required + ' muestras Wq' +
+          ' | Intel ' + pdfForecast.intelReadiness.markov.value + '/' + pdfForecast.intelReadiness.markov.required +
+          ' obs Markov, ' + pdfForecast.intelReadiness.cycles.value + '/' + pdfForecast.intelReadiness.cycles.required + ' ciclos, ' +
+          pdfForecast.intelReadiness.waits.value + '/' + pdfForecast.intelReadiness.waits.required + ' muestras Wq.'
+        );
+      }
+      const forecastWrapW = CW - 10;
+      const forecastLineH = 4.6;
+      const forecastTopPad = 10;
+      const forecastBottomPad = 5;
+      let forecastBoxH = forecastTopPad + forecastBottomPad;
+      const forecastWrapped = forecastParagraphs.map(function(paragraph) {
+        const lines = doc.splitTextToSize(safe(paragraph), forecastWrapW);
+        forecastBoxH += lines.length * forecastLineH + 1.6;
+        return lines;
+      });
+      fill('#08121e'); doc.rect(M, y-3, CW, forecastBoxH, 'F');
+      draw('#1eb0ff'); doc.setLineWidth(0.2); doc.rect(M, y-3, CW, forecastBoxH, 'S');
+      txt(pdfForecast.ready ? '#00df76' : '#ffbe2e');
+      doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+      doc.text(pdfForecast.ready ? 'PRONOSTICO MARKOV HABILITADO CON AMBOS MODOS' : 'PRONOSTICO MARKOV AUN NO HABILITADO', M+4, y+3);
+      txt('#8899bb'); doc.setFontSize(6.5); doc.setFont('helvetica','normal');
+      let forecastTextY = y + 10;
+      forecastWrapped.forEach(function(lines) {
+        lines.forEach(function(line) {
+          doc.text(line, M + 4, forecastTextY);
+          forecastTextY += forecastLineH;
+        });
+        forecastTextY += 1.6;
+      });
+      y += forecastBoxH + 6;
+
+      if (pdfForecast.ready) {
+        const fcCardGap = 6;
+        const fcCardW = (CW - fcCardGap) / 2;
+        const fcCardH = 28;
+        drawPdfCompareCard(M, y, fcCardW, fcCardH, {
+          title: 'Wq proyectado',
+          currentLabel: 'CONV',
+          compareLabel: 'INTEL',
+          currentValue: pdfForecast.conv.wq.mean,
+          compareValue: pdfForecast.intel.wq.mean,
+          currentColor: '#ff2d50',
+          compareColor: '#00df76',
+          formatter: function(v) { return v.toFixed(2) + ' m'; },
+          deltaText: (pdfForecast.deltas.wqPct !== null ? ((pdfForecast.deltas.wqPct >= 0 ? '-' : '+') + Math.abs(pdfForecast.deltas.wqPct) + '%') : 'pend.'),
+          deltaColor: '#00df76',
+        });
+        drawPdfCompareCard(M + fcCardW + fcCardGap, y, fcCardW, fcCardH, {
+          title: 'Tasa proyectada',
+          currentLabel: 'CONV',
+          compareLabel: 'INTEL',
+          currentValue: pdfForecast.conv.tp.mean,
+          compareValue: pdfForecast.intel.tp.mean,
+          currentColor: '#ff2d50',
+          compareColor: '#00df76',
+          formatter: function(v) { return Math.round(v) + ' v/h'; },
+          deltaText: (pdfForecast.deltas.tpPct !== null ? ((pdfForecast.deltas.tpPct >= 0 ? '+' : '-') + Math.abs(pdfForecast.deltas.tpPct) + '%') : 'pend.'),
+          deltaColor: '#00df76',
+        });
+        y += fcCardH + fcCardGap;
+        drawPdfCompareCard(M, y, CW, 26, {
+          title: 'Cola pico proyectada',
+          currentLabel: 'CONV',
+          compareLabel: 'INTEL',
+          currentValue: pdfForecast.conv.maxQ.mean,
+          compareValue: pdfForecast.intel.maxQ.mean,
+          currentColor: '#ff2d50',
+          compareColor: '#00df76',
+          formatter: function(v) { return Math.round(v) + ' veh'; },
+          deltaText: (pdfForecast.deltas.qPct !== null ? ((pdfForecast.deltas.qPct >= 0 ? '-' : '+') + Math.abs(pdfForecast.deltas.qPct) + '%') : 'pend.'),
+          deltaColor: '#00df76',
+        });
+      }
+
+      // ─────────────────────────────────────
+      //  PAGE 4 — GRAFICAS
       // ─────────────────────────────────────
       doc.addPage();
       fill('#07090d'); doc.rect(0,0,PW,PH,'F');
@@ -2437,10 +2893,10 @@ function exportPDF() {
         y += ih + 18;
       };
 
-      addImg(imgBar, safe('Wq Comparativa: Convencional 4.5m vs Inteligente 1.8m (referencia imagen)'), 28);
+      addImg(imgBar, safe('Wq Sem A - barra comparativa observada por modo'), 28);
       addImg(imgWQ,  safe('Wq acumulado en tiempo - Convencional (rojo) vs Inteligente (verde)'), 24);
-      addImg(imgTP,  safe('Throughput (veh/h) - Convencional (rojo) vs Inteligente (verde)'), 24);
-      addImg(imgQ,   safe('Cola total acumulada - Convencional (rojo) vs Inteligente (verde)'), 24);
+      addImg(imgTP,  safe('Tasa Sem A (veh/h eq.) - Convencional (rojo) vs Inteligente (verde)'), 24);
+      addImg(imgQ,   safe('Cola Sem A acumulada - Convencional (rojo) vs Inteligente (verde)'), 24);
       addImg(imgCC,  safe('Diagrama ciclo semaforo - Verde / Amarillo / Rojo actual'), 16);
 
       // Caja de metodología
@@ -2477,7 +2933,8 @@ function exportPDF() {
       alert('Error generando PDF: ' + e.message);
       console.error(e);
     } finally {
-      btn.textContent = 'PDF'; btn.disabled = false;
+      setButtonIconLabel('btnPDF', 'file', 'PDF');
+      btn.disabled = false;
     }
   }, 80);
 }
@@ -2486,17 +2943,17 @@ function toggleRun() {
   SIM.running = !SIM.running;
   const btn=document.getElementById('btnR'), dot=document.getElementById('ld');
   if (SIM.running) {
-    btn.textContent='⏸ PAUSAR'; btn.className='btn pause';
+    setButtonIconLabel('btnR', 'pause', 'PAUSAR'); btn.className='btn pause';
     dot.style.background='var(--G)'; lastTS=null; requestAnimationFrame(tick);
     addLog('I','▶ Iniciado — '+SIM.mode.toUpperCase()+' | '+SIM.scenario.toUpperCase());
   } else {
-    btn.textContent='▶ INICIAR'; btn.className='btn go';
+    setButtonIconLabel('btnR', 'play', 'INICIAR'); btn.className='btn go';
     dot.style.background='var(--Y)'; addLog('I','⏸ Pausado');
   }
 }
 function resetAll() {
   SIM.running=false;
-  document.getElementById('btnR').textContent='▶ INICIAR';
+  setButtonIconLabel('btnR', 'play', 'INICIAR');
   document.getElementById('btnR').className='btn go';
   document.getElementById('ld').style.background='var(--G)';
   Object.assign(SIM,{t:0,phA:'R',tmA:35,mxA:35,phB:'G',tmB:30,mxB:30,
@@ -2504,28 +2961,45 @@ function resetAll() {
     qA:0,sA:0,sCycA:0,qB:0,sB:0,qC:0,sC:0,qD:0,sD:0,
     cycles:0,mxQA:0,mxQB:0,mxQC:0,mxQD:0,
     wtA:[],wtB:[],wtC:[],wtD:[],wsA:[],wsB:[],wsC:[],wsD:[],
-    cycSvd:[],nxA:1.5,nxB:2.5,nxC:2.0,nxD:1.8,chartQ:[]});
+    cycSvd:[],nxA:1.5,nxB:2.5,nxC:2.0,nxD:1.8,_lastSnap:-1,chartQ:[],
+    cmpWqConv:[],cmpWqInt:[],cmpTpConv:[],cmpTpInt:[],cmpQConv:[],cmpQInt:[]});
   VEHS=[]; clearLog(); updateSemUI();
   MARKOV.reset();
+  FORECAST_CACHE.modal = null;
+  FORECAST_CACHE.sidebar = null;
+  FORECAST_CACHE.pdf = null;
   vx.clearRect(0,0,VC.width,VC.height); drawRoad(); renderFrame();
+  updateUI();
   document.getElementById('clk').textContent='T = 0.0 s';
+  renderForecastBlocked(getForecastContext({
+    scenario: SIM.scenario || 'valle',
+    startMonth: new Date().getMonth ? new Date().getMonth() : 0,
+    nRep: 100,
+    months: 6,
+    cacheSlot: 'modal',
+  }));
+  updateForecastSidebar();
   addLog('I','↺ Reiniciado — Intersección El Bosque · Panamá');
 }
 function toggleMode() {
   SIM.mode = SIM.mode==='convencional'?'inteligente':'convencional';
   const btn=document.getElementById('btnM');
   if (SIM.mode==='inteligente') {
-    btn.textContent='🧠 INTELIGENTE'; btn.style.borderColor='var(--G)'; btn.style.color='var(--G)';
+    setButtonIconLabel('btnM', 'cpu', 'INTELIGENTE'); btn.style.borderColor='var(--G)'; btn.style.color='var(--G)';
     addLog('I','🧠 MODO INTELIGENTE activado — verde adaptativo, servicio optimizado');
     const it1=document.getElementById('intel-targets'); if(it1) it1.style.display='block';
     addLog('I','📷 Cámaras + sensores de cola activos en 4 semáforos');
     addLog('I','🔄 Sincronización A+D ↔ B+C: fases adaptativas por densidad');
     addLog('I','📊 Verde A+D = f(qA+qD)·2.0+10s · Verde B+C = f(qB+qC)·1.8+10s');
   } else {
-    btn.textContent='⚡ CONVENCIONAL'; btn.style.borderColor=''; btn.style.color='';
+    setButtonIconLabel('btnM', 'bolt', 'CONVENCIONAL'); btn.style.borderColor=''; btn.style.color='';
     addLog('I','⚡ CONVENCIONAL: Fase1=A+D verde '+SIM.tGA+'s · Fase2=B+C verde '+SIM.tGB+'s');
     const it2=document.getElementById('intel-targets'); if(it2) it2.style.display='none';
   }
+  FORECAST_CACHE.modal = null;
+  FORECAST_CACHE.sidebar = null;
+  FORECAST_CACHE.pdf = null;
+  updateForecastSidebar();
   drawRoad(); renderFrame();
 }
 function loadScenario(s) {
@@ -2568,8 +3042,12 @@ function loadScenario(s) {
     ranges[1].value=0.02; document.getElementById('lb-v').textContent='0.02 v/s';
     document.getElementById('tv').className='scn on';
     if(slbl) slbl.textContent='VALLE';
-    addLog('I','🌿 HORA VALLE: λA=0.04 v/s — condiciones normales');
+      addLog('I','🌿 HORA VALLE: λA=0.04 v/s — condiciones normales');
   }
+  FORECAST_CACHE.modal = null;
+  FORECAST_CACHE.sidebar = null;
+  FORECAST_CACHE.pdf = null;
+  updateForecastSidebar();
 }
 
 function resize() {
@@ -2593,8 +3071,1186 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 updateSemUI();
+updateForecastSidebar();
 addLog('I','🚦 TrafficFlow — Intersección El Bosque · Panamá');
 addLog('I','Vehículos con canvas: autos, SUV, pickup, camión, moto — orientación correcta');
 addLog('I','Modelo IDM (Intelligent Driver Model): espaciado y desaceleración realistas');
 addLog('I','Sem.A (horiz/vuelta-U) complementario con Sem.B (vertical/avenida)');
 addLog('I','▶ INICIAR para correr la simulación de eventos discretos');
+// ══════════════════════════════════════════════════════════════════════════════
+//  MÓDULO PRONÓSTICO MARKOV — 6 MESES
+//  Simulación estocástica por escenario horario usando cadenas de Markov.
+//  Para cada mes proyecta: Wq, cola máxima, throughput, ρ en ambos modos.
+//  Utiliza Monte Carlo (N réplicas) para obtener media e IC 95%.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MONTH_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                     'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+// Parámetros de escenario: {lA, lB, muA, cycleConv, cycleIntel, label}
+const FC_SCENARIOS = {
+  pico:     { lA:0.25, lB:0.08, label:'5–7 PM Pico' },
+  manana:   { lA:0.18, lB:0.06, label:'7–9 AM Mañana' },
+  mediodia: { lA:0.06, lB:0.03, label:'12–2 PM Mediodía' },
+  valle:    { lA:0.04, lB:0.02, label:'Hora Valle' },
+};
+
+// Factor de crecimiento mensual de demanda (tendencia leve +1.5% mensual urbano Panamá)
+const GROWTH_RATE = 0.015;
+
+// Factor de mejora acumulada del modo inteligente (aprende de patrones, +0.8% por mes)
+const INTEL_LEARN_RATE = 0.008;
+
+const FC_MIN_MARKOV_OBS = 10;
+const FC_MARKOV_STEP_SEC = 2;
+const FC_MIN_CYCLES = 1;
+const FC_PREVIEW_WAIT_SAMPLES = 6;
+const FC_MIN_WAIT_SAMPLES = 12;
+const FORECAST_CACHE = { modal:null, sidebar:null, pdf:null };
+
+function fcClamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function buttonIconHTML(iconId, label) {
+  return '<span class="btn-ico" aria-hidden="true"><svg class="ico"><use href="#i-' + iconId + '"></use></svg></span><span>' + label + '</span>';
+}
+
+function setButtonIconLabel(id, iconId, label) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = buttonIconHTML(iconId, label);
+}
+
+function fcAvg(arr) {
+  return arr && arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+}
+
+function fcLast(arr) {
+  return arr && arr.length ? arr[arr.length - 1] : null;
+}
+
+function fcSamplePoisson(lambdaWindow) {
+  if (!Number.isFinite(lambdaWindow) || lambdaWindow <= 0) return 0;
+  const L = Math.exp(-lambdaWindow);
+  let k = 0;
+  let p = 1;
+  do {
+    k++;
+    p *= Math.random();
+  } while (p > L);
+  return k - 1;
+}
+
+function fcNormalizeSteady(steady, fallback) {
+  const base = fallback || { R:0.33, Y:0.33, G:0.34 };
+  const out = { R:0, Y:0, G:0 };
+  let total = 0;
+  ['R', 'Y', 'G'].forEach(function(state) {
+    const value = Number(steady && steady[state]);
+    out[state] = Number.isFinite(value) && value >= 0 ? value : 0;
+    total += out[state];
+  });
+  if (total <= 0) return fcNormalizeSteady(base);
+  ['R', 'Y', 'G'].forEach(function(state) { out[state] /= total; });
+  return out;
+}
+
+function fcNormalizeMatrix(matrix, fallbackMatrix) {
+  const safeFallback = fallbackMatrix || MARKOV.matConv;
+  const out = {};
+  ['R', 'Y', 'G'].forEach(function(from) {
+    const row = {};
+    let total = 0;
+    ['R', 'Y', 'G'].forEach(function(to) {
+      const value = Number(matrix && matrix[from] && matrix[from][to]);
+      row[to] = Number.isFinite(value) && value >= 0 ? value : 0;
+      total += row[to];
+    });
+    if (total <= 0) {
+      total = 0;
+      ['R', 'Y', 'G'].forEach(function(to) {
+        const fb = Number(safeFallback[from] && safeFallback[from][to]);
+        row[to] = Number.isFinite(fb) && fb >= 0 ? fb : 0;
+        total += row[to];
+      });
+    }
+    if (total <= 0) total = 1;
+    ['R', 'Y', 'G'].forEach(function(to) { row[to] /= total; });
+    out[from] = row;
+  });
+  return out;
+}
+
+function fcSampleFromSteady(steady, fallbackState) {
+  const dist = fcNormalizeSteady(steady);
+  const r = Math.random();
+  let cumul = 0;
+  const states = ['R', 'Y', 'G'];
+  for (let i = 0; i < states.length; i++) {
+    cumul += dist[states[i]];
+    if (r <= cumul) return states[i];
+  }
+  return fallbackState || 'R';
+}
+
+function fcNextMarkovState(currentState, matrix) {
+  const row = (matrix && matrix[currentState]) || (matrix && matrix.R) || MARKOV.matConv.R;
+  const r = Math.random();
+  let cumul = 0;
+  const states = ['R', 'Y', 'G'];
+  for (let i = 0; i < states.length; i++) {
+    cumul += row[states[i]];
+    if (r <= cumul) return states[i];
+  }
+  return currentState || 'R';
+}
+
+function markovMatrixMultiply(a, b) {
+  const out = { R:{R:0,Y:0,G:0}, Y:{R:0,Y:0,G:0}, G:{R:0,Y:0,G:0} };
+  ['R','Y','G'].forEach(function(i) {
+    ['R','Y','G'].forEach(function(j) {
+      let sum = 0;
+      ['R','Y','G'].forEach(function(k) {
+        sum += (a[i] && a[i][k] ? a[i][k] : 0) * (b[k] && b[k][j] ? b[k][j] : 0);
+      });
+      out[i][j] = sum;
+    });
+  });
+  return out;
+}
+
+function markovMatrixPower(matrix, steps) {
+  const safe = fcNormalizeMatrix(matrix, MARKOV.matConv);
+  let out = { R:{R:1,Y:0,G:0}, Y:{R:0,Y:1,G:0}, G:{R:0,Y:0,G:1} };
+  for (let i = 0; i < Math.max(0, steps); i++) out = markovMatrixMultiply(out, safe);
+  return out;
+}
+
+function markovExpectedRunSeconds(matrix, state, stepSec) {
+  const safe = fcNormalizeMatrix(matrix, MARKOV.matConv);
+  const pStay = fcClamp((safe[state] && safe[state][state]) || 0, 0, 0.999);
+  return stepSec / Math.max(1 - pStay, 0.001);
+}
+
+function markovMeanStepsToTarget(matrix, targetState) {
+  const safe = fcNormalizeMatrix(matrix, MARKOV.matConv);
+  let h = { R:0, Y:0, G:0 };
+  for (let iter = 0; iter < 300; iter++) {
+    const next = { R:0, Y:0, G:0 };
+    let maxDiff = 0;
+    ['R','Y','G'].forEach(function(s) {
+      if (s === targetState) {
+        next[s] = 0;
+        return;
+      }
+      next[s] = 1 + safe[s].R * h.R + safe[s].Y * h.Y + safe[s].G * h.G;
+      maxDiff = Math.max(maxDiff, Math.abs(next[s] - h[s]));
+    });
+    h = next;
+    if (maxDiff < 1e-6) break;
+  }
+  return h;
+}
+
+function markovExpectedTimeToGreen(matrix, steady, currentState, stepSec) {
+  const safeSteady = fcNormalizeSteady(steady, MARKOV.steadyConv);
+  if (currentState === 'G') {
+    return stepSec / Math.max(safeSteady.G, 0.001);
+  }
+  const hits = markovMeanStepsToTarget(matrix, 'G');
+  return hits[currentState] * stepSec;
+}
+
+function markovBlockedProbability(matrix, currentState, horizonSec, stepSec) {
+  const steps = Math.max(1, Math.ceil(horizonSec / Math.max(stepSec, 1)));
+  const power = markovMatrixPower(matrix, steps);
+  const row = power[currentState] || power.R;
+  return fcClamp((row.R || 0) + (row.Y || 0), 0, 1);
+}
+
+function formatSignedVeh(value) {
+  const rounded = Math.round(value || 0);
+  return (rounded >= 0 ? '+' : '') + rounded + ' v/h';
+}
+
+function getScenarioConfig() {
+  try {
+    return FC_SCENARIOS[SIM.scenario] || FC_SCENARIOS.valle || { lA: SIM.lA || 0, label: SIM.scenario || 'Sesion actual' };
+  } catch (err) {
+    return { lA: SIM.lA || 0, label: SIM.scenario || 'Sesion actual' };
+  }
+}
+
+function getModeSeries(mode) {
+  const safeMode = normalizeModeName(mode);
+  return {
+    wq: safeMode === 'inteligente' ? SIM.cmpWqInt : SIM.cmpWqConv,
+    tp: safeMode === 'inteligente' ? SIM.cmpTpInt : SIM.cmpTpConv,
+    q:  safeMode === 'inteligente' ? SIM.cmpQInt  : SIM.cmpQConv,
+  };
+}
+
+function computeModeConvergencePct(modeSummary) {
+  if (!modeSummary || !modeSummary.params || !modeSummary.params.hasAnyRealData || !modeSummary.params.usesEmpiricalMatrix) return null;
+  const defaults = getForecastModeDefaults(modeSummary.mode);
+  const steady = modeSummary.params.steady || defaults.steady;
+  const theo = defaults.steady;
+  const tvd = (
+    Math.abs((steady.G || 0) - (theo.G || 0)) +
+    Math.abs((steady.Y || 0) - (theo.Y || 0)) +
+    Math.abs((steady.R || 0) - (theo.R || 0))
+  ) / 2;
+  return Math.max(0, Math.min(100, Math.round((1 - tvd) * 100)));
+}
+
+function getModeObservedSummary(mode, fallbackLA) {
+  const safeMode = normalizeModeName(mode);
+  const currentMode = normalizeModeName(SIM.mode);
+  const params = getRealSimParams(safeMode, fallbackLA);
+  const series = getModeSeries(safeMode);
+  const liveWq = safeMode === currentMode && SIM.wtA.length > 0
+    ? parseFloat((SIM.wtA.reduce(function(a, b) { return a + b; }, 0) / SIM.wtA.length).toFixed(2))
+    : null;
+  const liveTp = safeMode === currentMode && SIM.t > 0 ? Math.round((SIM.sA / SIM.t) * 3600) : null;
+  const liveQ = safeMode === currentMode ? SIM.qA : null;
+  const livePeakQ = safeMode === currentMode ? SIM.mxQA : null;
+  const cycles = getModeRunStats(safeMode).cycles || 0;
+  const latestWq = liveWq !== null ? liveWq : fcLast(series.wq);
+  const latestTp = liveTp !== null ? liveTp : fcLast(series.tp);
+  const latestQ = liveQ !== null ? liveQ : fcLast(series.q);
+  const peakQ = livePeakQ !== null ? livePeakQ : (series.q.length ? Math.max.apply(null, series.q) : null);
+  const lambdaA = (params.lABase || fallbackLA || 0) * 0.35;
+  const rho = params.hasAnyRealData && params.muEff > 0 ? Math.min(0.999, lambdaA / params.muEff) : null;
+  const markovValid = params.hasAnyRealData && params.usesEmpiricalMatrix && cycles >= FC_MIN_CYCLES;
+  return {
+    mode: safeMode,
+    hasData: params.hasAnyRealData || series.wq.length > 0 || series.tp.length > 0 || series.q.length > 0 || cycles > 0,
+    wq: latestWq,
+    tp: latestTp,
+    q: latestQ,
+    peakQ: peakQ,
+    cycles: cycles,
+    markovObs: params.markovObs || 0,
+    rho: rho,
+    convergencePct: computeModeConvergencePct({ mode: safeMode, params: params }),
+    capacityVehH: markovValid ? params.muEff * 3600 : null,
+    params: params,
+    markovValid: markovValid,
+  };
+}
+
+function getComparisonSnapshot() {
+  const sc = getScenarioConfig();
+  const conv = getModeObservedSummary('convencional', sc.lA);
+  const intel = getModeObservedSummary('inteligente', sc.lA);
+  return {
+    scenarioLabel: sc.label || 'Sesion actual',
+    conv: conv,
+    intel: intel,
+    bothObserved: conv.hasData && intel.hasData,
+  };
+}
+
+function getForecastModeDefaults(mode) {
+  const isIntel = mode === 'inteligente';
+  const tYellow = SIM.tY || 4;
+  const tGreen  = isIntel ? 30 : 18;
+  const tRed    = isIntel ? 32 : 100;
+  const steady  = isIntel ? MARKOV.steadyIntel : MARKOV.steadyConv;
+  const matrix  = isIntel ? MARKOV.matIntel : MARKOV.matConv;
+  const muGreen = isIntel ? (1 / 2.0) : (1 / 3.5);
+  return {
+    mode: mode,
+    tYellow: tYellow,
+    tGreen: tGreen,
+    tRed: tRed,
+    cycleT: tGreen + tYellow + tRed,
+    steady: steady,
+    matrix: matrix,
+    muGreen: muGreen,
+    muEff: steady.G * muGreen,
+    stepSec: FC_MARKOV_STEP_SEC,
+    initialQueue: 0,
+  };
+}
+
+function getRealSimParams(mode, fallbackLA) {
+  const safeMode = normalizeModeName(mode);
+  const defaults = getForecastModeDefaults(safeMode);
+  const currentMode = normalizeModeName(SIM.mode);
+  const aggregate = getMarkovAggregateStats(getModeMarkovAggregateKey(safeMode));
+  const modeStats = getModeRunStats(safeMode);
+  const markovObs = aggregate.obs;
+  const cmpWqSeries = safeMode === 'inteligente' ? SIM.cmpWqInt : SIM.cmpWqConv;
+  const cmpTpSeries = safeMode === 'inteligente' ? SIM.cmpTpInt : SIM.cmpTpConv;
+  const cmpQSeries  = safeMode === 'inteligente' ? SIM.cmpQInt  : SIM.cmpQConv;
+  const waitFocus = cmpWqSeries.slice();
+  const latestWq = fcLast(cmpWqSeries);
+  const latestTpSeries = fcLast(cmpTpSeries);
+  const latestQSeries  = fcLast(cmpQSeries);
+  const latestTp = latestTpSeries;
+  const baseQueue = safeMode === currentMode && Number.isFinite(SIM.qA) ? SIM.qA : (latestQSeries !== null ? latestQSeries : 0);
+  const hasAnyRealData = markovObs > 0 || waitFocus.length > 0 || (modeStats.cycles || 0) > 0 || latestTp !== null;
+  const usesEmpiricalMatrix = markovObs >= FC_MIN_MARKOV_OBS;
+  const steady = fcNormalizeSteady(markovObs > 0 ? aggregate.steady : defaults.steady, defaults.steady);
+  let inferredCycle = defaults.cycleT;
+  if (steady.Y > 0.001) {
+    const cycleFromYellow = defaults.tYellow / steady.Y;
+    if (Number.isFinite(cycleFromYellow) && cycleFromYellow > defaults.tYellow) {
+      inferredCycle = fcClamp(cycleFromYellow, defaults.tYellow + 8, 240);
+    }
+  }
+  const tGreen = fcClamp(inferredCycle * steady.G, 6, 90);
+  const tRed   = fcClamp(inferredCycle * steady.R, 6, 180);
+  const cycleT = tGreen + defaults.tYellow + tRed;
+  const matrix = fcNormalizeMatrix(usesEmpiricalMatrix ? aggregate.matrix : defaults.matrix, defaults.matrix);
+  const muEffObserved = latestTp !== null ? latestTp / 3600 : null;
+  const muGreenObserved = muEffObserved ? muEffObserved / Math.max(steady.G, 0.05) : null;
+  const muGreen = muGreenObserved ? fcClamp(muGreenObserved, 0.05, 1.20) : defaults.muGreen;
+  const sourceKind = !hasAnyRealData ? 'fallback' : (usesEmpiricalMatrix ? 'real' : 'partial');
+  return {
+    mode: safeMode,
+    lABase: hasAnyRealData && SIM.lA > 0 ? SIM.lA : fallbackLA,
+    matrix: matrix,
+    steady: steady,
+    tYellow: defaults.tYellow,
+    tGreen: tGreen,
+    tRed: tRed,
+    cycleT: cycleT,
+    muGreen: muGreen,
+    muEff: muGreen * Math.max(steady.G, 0.001),
+    stepSec: defaults.stepSec,
+    initialQueue: Math.max(0, Math.round(baseQueue || 0)),
+    markovObs: markovObs,
+    waitCount: waitFocus.length,
+    latestWq: latestWq,
+    latestTp: latestTp,
+    totalServed: latestTp !== null && SIM.t > 0 ? Math.round((latestTp / 3600) * SIM.t) : 0,
+    simTime: SIM.t || 0,
+    cycles: modeStats.cycles || 0,
+    hasAnyRealData: hasAnyRealData,
+    usesEmpiricalMatrix: usesEmpiricalMatrix,
+    sourceKind: sourceKind,
+  };
+}
+
+function getForecastReadiness(sourceParams) {
+  const progress = function(value, required) {
+    const safeValue = Math.max(0, value || 0);
+    return {
+      value: safeValue,
+      required: required,
+      ready: safeValue >= required,
+      pct: Math.min(100, Math.round((safeValue / Math.max(required, 1)) * 100)),
+    };
+  };
+  const markov = progress(sourceParams && sourceParams.markovObs, FC_MIN_MARKOV_OBS);
+  const cycles = progress(sourceParams && sourceParams.cycles, FC_MIN_CYCLES);
+  const previewWaits = progress(sourceParams && sourceParams.waitCount, FC_PREVIEW_WAIT_SAMPLES);
+  const waits  = progress(sourceParams && sourceParams.waitCount, FC_MIN_WAIT_SAMPLES);
+  const hasEmpiricalBase = !!(sourceParams && sourceParams.hasAnyRealData && sourceParams.usesEmpiricalMatrix && markov.ready && cycles.ready);
+  const previewReady = !!(hasEmpiricalBase && previewWaits.ready);
+  const ready = !!(previewReady && waits.ready);
+  return {
+    ready: ready,
+    previewReady: previewReady,
+    renderable: previewReady,
+    state: ready ? 'ready' : (previewReady ? 'preview' : 'blocked'),
+    confidenceLabel: ready ? 'alta' : (previewReady ? 'media' : 'baja'),
+    markov: markov,
+    cycles: cycles,
+    previewWaits: previewWaits,
+    waits: waits,
+  };
+}
+
+function summarizeForecastResults(results) {
+  let totalWqDelta = 0;
+  let totalTpDelta = 0;
+  results.forEach(function(r) {
+    const wqPct = r.conv.wq.mean > 0 ? Math.round((1 - r.intel.wq.mean / r.conv.wq.mean) * 100) : 0;
+    const tpPct = r.conv.tp.mean > 0 ? Math.round((r.intel.tp.mean - r.conv.tp.mean) / r.conv.tp.mean * 100) : 0;
+    totalWqDelta += wqPct;
+    totalTpDelta += tpPct;
+  });
+  return {
+    avgWqDelta: results.length ? Math.round(totalWqDelta / results.length) : 0,
+    avgTpDelta: results.length ? Math.round(totalTpDelta / results.length) : 0,
+    firstMonth: results.length ? results[0] : null,
+  };
+}
+
+function getOperationalMarkovContext() {
+  const scenario = SIM.scenario || 'valle';
+  const sc = FC_SCENARIOS[scenario] || FC_SCENARIOS.valle;
+  const currentMode = normalizeModeName(SIM.mode);
+  const actual = getRealSimParams(currentMode, sc.lA);
+  const actualDefaults = getForecastModeDefaults(currentMode);
+  const comparisonMode = currentMode === 'inteligente' ? 'convencional' : 'inteligente';
+  const comparisonObserved = getRealSimParams(comparisonMode, sc.lA);
+  const lambdaVeh = (actual.lABase || sc.lA || 0) * 3600;
+  const currentState = SIM.phA || 'R';
+  const stepSec = actual.stepSec || FC_MARKOV_STEP_SEC;
+  const markovReady = actual.hasAnyRealData && actual.usesEmpiricalMatrix && (actual.cycles || 0) >= FC_MIN_CYCLES;
+  const comparisonObservedReady = comparisonObserved.hasAnyRealData &&
+    comparisonObserved.usesEmpiricalMatrix &&
+    (comparisonObserved.cycles || 0) >= FC_MIN_CYCLES;
+  const theoSt = actualDefaults.steady;
+  const tvd = (Math.abs(actual.steady.G - theoSt.G) + Math.abs(actual.steady.Y - (theoSt.Y || 0.033)) + Math.abs(actual.steady.R - theoSt.R)) / 2;
+  const convergencePct = Math.max(0, Math.min(100, Math.round((1 - tvd) * 100)));
+
+  const current = {
+    mode: currentMode,
+    state: currentState,
+    matrix: actual.matrix,
+    steady: actual.steady,
+    timeToGreenSec: markovExpectedTimeToGreen(actual.matrix, actual.steady, currentState, stepSec),
+    redRunSec: markovExpectedRunSeconds(actual.matrix, 'R', stepSec),
+    blockedSharePct: (actual.steady.R + actual.steady.Y) * 100,
+    blockedRisk30Pct: markovBlockedProbability(actual.matrix, currentState, 30, stepSec) * 100,
+    capacityVehH: actual.muEff * 3600,
+    marginVehH: (actual.muEff * 3600) - lambdaVeh,
+  };
+
+  const benchmark = comparisonObservedReady ? {
+    mode: comparisonMode,
+    matrix: comparisonObserved.matrix,
+    steady: comparisonObserved.steady,
+    timeToGreenSec: markovExpectedTimeToGreen(comparisonObserved.matrix, comparisonObserved.steady, currentState, stepSec),
+    redRunSec: markovExpectedRunSeconds(comparisonObserved.matrix, 'R', stepSec),
+    blockedSharePct: (comparisonObserved.steady.R + comparisonObserved.steady.Y) * 100,
+    blockedRisk30Pct: markovBlockedProbability(comparisonObserved.matrix, currentState, 30, stepSec) * 100,
+    capacityVehH: comparisonObserved.muEff * 3600,
+    marginVehH: comparisonObserved.muEff * 3600 - lambdaVeh,
+    sourceKind: 'observed',
+    markovObs: comparisonObserved.markovObs || 0,
+    labelShort: comparisonMode === 'inteligente' ? 'IA OBS.' : 'CONV OBS.',
+  } : null;
+
+  return {
+    scenario: scenario,
+    scenarioLabel: sc.label,
+    actual: actual,
+    current: current,
+    benchmark: benchmark,
+    comparisonMode: comparisonMode,
+    comparisonReady: comparisonObservedReady,
+    comparisonLabel: comparisonMode === 'inteligente' ? 'modo inteligente observado' : 'modo convencional observado',
+    missingComparisonLabel: comparisonMode === 'inteligente' ? 'modo inteligente' : 'modo convencional',
+    lambdaVehH: lambdaVeh,
+    readiness: {
+      ready: !!markovReady,
+      markovObs: actual.markovObs || 0,
+      requiredObs: FC_MIN_MARKOV_OBS,
+      cycles: actual.cycles || 0,
+      requiredCycles: FC_MIN_CYCLES,
+      convergencePct: convergencePct,
+    },
+  };
+}
+
+function formatForecastDelta(baseValue, compareValue, lowerIsBetter) {
+  if (!(baseValue > 0) || !Number.isFinite(compareValue)) return '--';
+  const pct = lowerIsBetter
+    ? Math.round((1 - compareValue / baseValue) * 100)
+    : Math.round((compareValue - baseValue) / baseValue * 100);
+  if (lowerIsBetter) return (pct >= 0 ? '-' : '+') + Math.abs(pct) + '%';
+  return (pct >= 0 ? '+' : '-') + Math.abs(pct) + '%';
+}
+
+function renderForecastSidebarPreview(container, context) {
+  if (!container) return;
+  const canRender = !!(context && context.readiness && context.readiness.ready);
+  container.style.display = canRender ? 'grid' : 'none';
+  if (!canRender) {
+    container.innerHTML = '';
+    return;
+  }
+  if (!context.benchmark) {
+    container.innerHTML = [
+      '<div class="fc-side-card">' +
+        '<div class="m">T - VERDE</div>' +
+        '<div class="wq">' + Math.round(context.current.timeToGreenSec) + ' s</div>' +
+        '<div class="tp">SESION ACTUAL</div>' +
+        '<div class="tag">comparacion pendiente</div>' +
+      '</div>',
+      '<div class="fc-side-card">' +
+        '<div class="m">RACHA ROJA</div>' +
+        '<div class="wq">' + Math.round(context.current.redRunSec) + ' s</div>' +
+        '<div class="tp">SESION ACTUAL</div>' +
+        '<div class="tag">comparacion pendiente</div>' +
+      '</div>',
+      '<div class="fc-side-card">' +
+        '<div class="m">CAPACIDAD</div>' +
+        '<div class="wq">' + Math.round(context.current.capacityVehH) + ' v/h</div>' +
+        '<div class="tp">SESION ACTUAL</div>' +
+        '<div class="tag">' + formatSignedVeh(context.current.marginVehH) + '</div>' +
+      '</div>',
+      '<div class="fc-side-card">' +
+        '<div class="m">RIESGO 30S</div>' +
+        '<div class="wq">' + Math.round(context.current.blockedRisk30Pct) + '%</div>' +
+        '<div class="tp">SESION ACTUAL</div>' +
+        '<div class="tag">' + Math.round(context.current.blockedSharePct) + '% bloqueado</div>' +
+      '</div>',
+    ].join('');
+    return;
+  }
+  const cmpLabel = context.benchmark.labelShort;
+  const deltaTime = Math.round(context.benchmark.timeToGreenSec - context.current.timeToGreenSec);
+  const deltaRed = Math.round(context.benchmark.redRunSec - context.current.redRunSec);
+  const deltaCap = Math.round(context.benchmark.capacityVehH - context.current.capacityVehH);
+  const deltaRisk = Math.round(context.benchmark.blockedRisk30Pct - context.current.blockedRisk30Pct);
+  container.innerHTML = [
+    '<div class="fc-side-card">' +
+      '<div class="m">T - VERDE</div>' +
+      '<div class="wq">' + Math.round(context.current.timeToGreenSec) + ' s</div>' +
+      '<div class="tp">' + cmpLabel + ' ' + Math.round(context.benchmark.timeToGreenSec) + ' s</div>' +
+      '<div class="tag">' + (deltaTime <= 0 ? '' : '+') + deltaTime + ' s</div>' +
+    '</div>',
+    '<div class="fc-side-card">' +
+      '<div class="m">RACHA ROJA</div>' +
+      '<div class="wq">' + Math.round(context.current.redRunSec) + ' s</div>' +
+      '<div class="tp">' + cmpLabel + ' ' + Math.round(context.benchmark.redRunSec) + ' s</div>' +
+      '<div class="tag">' + (deltaRed <= 0 ? '' : '+') + deltaRed + ' s</div>' +
+    '</div>',
+    '<div class="fc-side-card">' +
+      '<div class="m">CAPACIDAD</div>' +
+      '<div class="wq">' + Math.round(context.current.capacityVehH) + ' v/h</div>' +
+      '<div class="tp">' + cmpLabel + ' ' + Math.round(context.benchmark.capacityVehH) + ' v/h</div>' +
+      '<div class="tag">' + (deltaCap >= 0 ? '+' : '') + deltaCap + ' v/h</div>' +
+    '</div>',
+    '<div class="fc-side-card">' +
+      '<div class="m">RIESGO 30S</div>' +
+      '<div class="wq">' + Math.round(context.current.blockedRisk30Pct) + '%</div>' +
+      '<div class="tp">' + cmpLabel + ' ' + Math.round(context.benchmark.blockedRisk30Pct) + '%</div>' +
+      '<div class="tag">' + (deltaRisk >= 0 ? '+' : '') + deltaRisk + ' pt</div>' +
+    '</div>',
+  ].join('');
+}
+
+function getForecastStartMonth(defaultMonth) {
+  const sel = document.getElementById('fc-start-month');
+  if (sel) {
+    const v = parseInt(sel.value, 10);
+    if (Number.isFinite(v)) return v;
+  }
+  return Number.isFinite(defaultMonth) ? defaultMonth : (new Date().getMonth ? new Date().getMonth() : 0);
+}
+
+function getForecastContext(options) {
+  const opts = options || {};
+  const scenario = opts.scenario || SIM.scenario || 'valle';
+  const startMonth = getForecastStartMonth(opts.startMonth);
+  const nRep = opts.nRep || 100;
+  const months = opts.months || 6;
+  const cacheSlot = opts.cacheSlot || null;
+  const sc = FC_SCENARIOS[scenario] || FC_SCENARIOS.valle;
+  const sourceParams = getRealSimParams(SIM.mode || 'convencional', sc.lA);
+  const readiness = getForecastReadiness(sourceParams);
+  const baseLA = sourceParams.hasAnyRealData && SIM.lA > 0 ? SIM.lA : sc.lA;
+  const cacheKey = [
+    scenario,
+    startMonth,
+    nRep,
+    months,
+    SIM.mode,
+    sourceParams.markovObs,
+    sourceParams.cycles,
+    sourceParams.waitCount,
+    Number(baseLA || 0).toFixed(4),
+  ].join('|');
+
+  if (cacheSlot && FORECAST_CACHE[cacheSlot] && FORECAST_CACHE[cacheSlot].key === cacheKey) {
+    return FORECAST_CACHE[cacheSlot].ctx;
+  }
+
+  const context = {
+    startMonth: startMonth,
+    scenario: scenario,
+    scenarioLabel: sc.label,
+    nRep: nRep,
+    months: months,
+    baseLA: baseLA,
+    sourceParams: sourceParams,
+    readiness: readiness,
+    results: [],
+    summary: null,
+  };
+
+  if (readiness.renderable) {
+    const convParams = getRealSimParams('convencional', baseLA);
+    const intelParams = getRealSimParams('inteligente', baseLA);
+    const cyclesPerSim = sourceParams.cycles >= 12 ? Math.round(fcClamp(sourceParams.cycles, 12, 60)) : 30;
+
+    for (let m = 0; m < months; m++) {
+      const mIdx  = (startMonth + m) % 12;
+      const growth = Math.pow(1 + GROWTH_RATE, m);
+      const lA_m   = Math.min(0.35, baseLA * growth);
+      const intelBoost = Math.pow(1 - INTEL_LEARN_RATE, m);
+      const conv  = monteCarlo(lA_m, 'convencional', cyclesPerSim, nRep, convParams);
+      const intel = monteCarlo(lA_m * intelBoost, 'inteligente', cyclesPerSim, nRep, intelParams);
+      context.results.push({ mIdx, conv, intel, lA: lA_m });
+    }
+
+    context.summary = summarizeForecastResults(context.results);
+  }
+
+  if (cacheSlot) FORECAST_CACHE[cacheSlot] = { key: cacheKey, ctx: context };
+  return context;
+}
+
+function getObservedPdfForecastContext(options) {
+  const opts = options || {};
+  const scenario = opts.scenario || SIM.scenario || 'valle';
+  const months = opts.months || 6;
+  const nRep = opts.nRep || 120;
+  const sc = FC_SCENARIOS[scenario] || FC_SCENARIOS.valle;
+  const convParams = getRealSimParams('convencional', sc.lA);
+  const intelParams = getRealSimParams('inteligente', sc.lA);
+  const convReadiness = getForecastReadiness(convParams);
+  const intelReadiness = getForecastReadiness(intelParams);
+  const baseLA = Math.max(convParams.lABase || 0, intelParams.lABase || 0, SIM.lA || 0, sc.lA || 0);
+  const cyclesPerSim = Math.round(fcClamp(Math.max(convParams.cycles || 0, intelParams.cycles || 0, 12), 12, 60));
+  const ready = !!(convReadiness.ready && intelReadiness.ready && baseLA > 0);
+  const context = {
+    ready: ready,
+    months: months,
+    nRep: nRep,
+    scenario: scenario,
+    scenarioLabel: sc.label,
+    baseLA: baseLA,
+    demandVehH: Math.round(baseLA * 3600),
+    cyclesPerSim: cyclesPerSim,
+    convParams: convParams,
+    intelParams: intelParams,
+    convReadiness: convReadiness,
+    intelReadiness: intelReadiness,
+    conv: null,
+    intel: null,
+    deltas: null,
+  };
+
+  if (!ready) return context;
+
+  const conv = monteCarlo(baseLA, 'convencional', cyclesPerSim, nRep, convParams);
+  const intel = monteCarlo(baseLA, 'inteligente', cyclesPerSim, nRep, intelParams);
+  const safePct = function(baseValue, compareValue, lowerBetter) {
+    if (!(Number.isFinite(baseValue) && Number.isFinite(compareValue) && Math.abs(baseValue) > 0.0001)) return null;
+    const raw = lowerBetter
+      ? (1 - compareValue / baseValue) * 100
+      : ((compareValue - baseValue) / baseValue) * 100;
+    return Math.round(raw);
+  };
+
+  context.conv = conv;
+  context.intel = intel;
+  context.deltas = {
+    wqPct: safePct(conv.wq.mean, intel.wq.mean, true),
+    tpPct: safePct(conv.tp.mean, intel.tp.mean, false),
+    qPct: safePct(conv.maxQ.mean, intel.maxQ.mean, true),
+  };
+  return context;
+}
+
+function updateForecastDataSource(context, scenarioLabel) {
+  const el = document.getElementById('fc-data-source');
+  if (!el) return;
+  const realParams = context && context.sourceParams ? context.sourceParams : context;
+  const readiness = context && context.readiness ? context.readiness : getForecastReadiness(realParams || {});
+  if (!realParams || !realParams.hasAnyRealData) {
+    el.className = 'fc-data-source warn';
+    el.textContent = 'SIN DATOS OBSERVADOS · usando escenario ' + scenarioLabel + ' como base provisional del pronostico';
+    return;
+  }
+  if (!readiness.renderable) {
+    el.className = 'fc-data-source warn';
+    el.textContent = 'RECOLECTANDO DATOS OBSERVADOS · Markov ' + readiness.markov.value + '/' + readiness.markov.required +
+      ' · ciclos ' + readiness.cycles.value + '/' + readiness.cycles.required +
+      ' · muestras Wq ' + readiness.waits.value + '/' + readiness.waits.required;
+    return;
+  }
+  const wqText = realParams.latestWq !== null && Number.isFinite(realParams.latestWq)
+    ? realParams.latestWq.toFixed(2) + 'm'
+    : '—';
+  const tpText = realParams.latestTp !== null && Number.isFinite(realParams.latestTp)
+    ? Math.round(realParams.latestTp) + 'v/h'
+    : '—';
+  const muText = Number.isFinite(realParams.muEff) ? realParams.muEff.toFixed(4) + ' v/s' : '—';
+  const obsText = (realParams.markovObs || 0) + ' obs Markov';
+  const cyclesText = (realParams.cycles || 0) + ' ciclos';
+  if (!readiness.ready) {
+    const pendingWaits = Math.max(0, readiness.waits.required - readiness.waits.value);
+    el.className = 'fc-data-source preview';
+    el.textContent = 'BASE EMPIRICA PRELIMINAR · ' + obsText + ' · Wq=' + wqText + ' · TP=' + tpText +
+      ' · ' + cyclesText + ' · confianza ' + readiness.confidenceLabel + ' · faltan ' + pendingWaits + ' muestras Wq';
+    return;
+  }
+  if (realParams.sourceKind === 'real') {
+    el.className = 'fc-data-source ok';
+    el.textContent = 'DATOS OBSERVADOS · ' + obsText + ' · Wq=' + wqText + ' · TP=' + tpText + ' · ' + cyclesText + ' · mu_eff=' + muText;
+    return;
+  }
+  el.className = 'fc-data-source warn';
+  el.textContent = 'DATOS PARCIALES · ' + obsText + ' · matriz teorica fallback · Wq=' + wqText + ' · TP=' + tpText + ' · ' + cyclesText;
+}
+
+function setForecastModalReady(isReady) {
+  const charts = document.getElementById('fc-charts-wrap');
+  const table = document.getElementById('fc-table-wrap');
+  const empty = document.getElementById('fc-empty-state');
+  if (charts) charts.style.display = isReady ? 'grid' : 'none';
+  if (table) table.style.display = isReady ? 'block' : 'none';
+  if (empty) empty.style.display = isReady ? 'none' : 'block';
+}
+
+function renderForecastBlocked(context) {
+  setForecastModalReady(false);
+  updateForecastDataSource(context, context.scenarioLabel);
+  const empty = document.getElementById('fc-empty-state');
+  if (empty) {
+    empty.innerHTML =
+      'Pronóstico bloqueado hasta acumular datos observados suficientes.<br>' +
+      'Progreso actual: Markov ' + context.readiness.markov.value + '/' + context.readiness.markov.required +
+      ' · ciclos ' + context.readiness.cycles.value + '/' + context.readiness.cycles.required +
+      ' · muestras Wq ' + context.readiness.waits.value + '/' + context.readiness.waits.required + '.<br>' +
+      'La vista preliminar se habilita desde ' + FC_PREVIEW_WAIT_SAMPLES + ' muestras Wq y la version consolidada desde ' + FC_MIN_WAIT_SAMPLES + '.';
+  }
+  const tbody = document.getElementById('fc-table-body');
+  if (tbody) tbody.innerHTML = '';
+  const verdict = document.getElementById('fc-verdict-row');
+  if (verdict) {
+    verdict.style.background = 'rgba(255,190,46,0.08)';
+    verdict.style.border = '1px solid rgba(255,190,46,0.3)';
+    verdict.style.color = 'var(--Y)';
+    verdict.textContent = 'Corre la simulacion unos ciclos mas. El pronostico mensual se habilita en vista preliminar desde la base empirica minima y luego se consolida automaticamente.';
+  }
+}
+
+function updateForecastSidebar() {
+  const panel = document.getElementById('forecast-side-panel');
+  if (!panel) return;
+  const setText = function(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  const setBar = function(id, pct, color) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    if (color) el.style.background = color;
+  };
+  const chip = document.getElementById('fc-side-chip');
+  const source = document.getElementById('fc-side-source');
+  const preview = document.getElementById('fc-side-preview');
+  const summary = document.getElementById('fc-side-summary');
+  try {
+    const ctx = getOperationalMarkovContext();
+    if (chip) {
+      chip.className = 'fc-side-chip ' + (ctx.readiness.ready ? 'ok' : 'wait');
+      chip.textContent = ctx.readiness.ready ? 'VALIDADO' : 'RECOLECTANDO';
+    }
+    if (source) {
+      if (!ctx.actual.hasAnyRealData) {
+        source.textContent = 'Sin datos observados todavia. El analisis operacional aparecera cuando la simulacion acumule una cadena empirica minima.';
+      } else {
+        const comparisonSource = ctx.comparisonReady
+          ? (ctx.comparisonLabel + ' · ' + ctx.benchmark.markovObs + ' obs')
+          : ('falta una corrida registrada del ' + ctx.missingComparisonLabel);
+        source.textContent = 'Cadena empirica de la sesion actual · ' + ctx.scenarioLabel + ' · ' + ctx.readiness.markovObs +
+          ' obs · estado actual ' + (ctx.current.state === 'G' ? 'VERDE' : ctx.current.state === 'R' ? 'ROJO' : 'AMARILLO') +
+          ' · λ=' + Math.round(ctx.lambdaVehH) + ' v/h · comparacion: ' + comparisonSource;
+      }
+    }
+    const obsPct = Math.min(100, Math.round((ctx.readiness.markovObs / Math.max(ctx.readiness.requiredObs, 1)) * 100));
+    const cyclesPct = Math.min(100, Math.round((ctx.readiness.cycles / Math.max(ctx.readiness.requiredCycles, 1)) * 100));
+    setText('fc-side-obs', ctx.readiness.markovObs + '/' + ctx.readiness.requiredObs);
+    setText('fc-side-cycles', ctx.readiness.cycles + '/' + ctx.readiness.requiredCycles);
+    setText('fc-side-conv', ctx.readiness.convergencePct + '%');
+    setBar('fc-side-obs-bar', obsPct, obsPct >= 100 ? 'var(--G)' : 'var(--Y)');
+    setBar('fc-side-cycles-bar', cyclesPct, cyclesPct >= 100 ? 'var(--G)' : 'var(--Y)');
+    setBar('fc-side-conv-bar', ctx.readiness.convergencePct, ctx.readiness.convergencePct >= 80 ? 'var(--G)' : (ctx.readiness.convergencePct >= 50 ? 'var(--Y)' : 'var(--R)'));
+    renderForecastSidebarPreview(preview, ctx);
+
+    if (!summary) return;
+    if (!ctx.readiness.ready) {
+      summary.textContent = 'La lectura operativa de Markov se habilita cuando existan al menos ' + ctx.readiness.requiredObs +
+        ' observaciones y ' + ctx.readiness.requiredCycles + ' ciclo completo. A diferencia del forecast, aqui no dependemos de Wq sino de la matriz empirica.';
+      return;
+    }
+    if (!ctx.comparisonReady) {
+      summary.textContent =
+        'Lectura OR con Markov de la sesion actual: Sem A queda bloqueado ' + Math.round(ctx.current.blockedSharePct) +
+        '% del tiempo, tarda ' + Math.round(ctx.current.timeToGreenSec) + ' s en llegar a verde desde el estado actual, ' +
+        'su racha roja esperada es ' + Math.round(ctx.current.redRunSec) + ' s y la capacidad efectiva observada es ' +
+        Math.round(ctx.current.capacityVehH) + ' v/h. El contraste aparecera cuando tambien exista una corrida registrada del ' +
+        ctx.missingComparisonLabel + ' en esta sesion.';
+      return;
+    }
+    const fromLabel = ctx.current.mode === 'inteligente' ? 'esquema inteligente actual' : 'control actual';
+    const toLabel = ctx.comparisonLabel;
+    summary.textContent =
+      'Lectura OR con Markov: el ' + fromLabel + ' deja a Sem A bloqueado ' + Math.round(ctx.current.blockedSharePct) +
+      '% del tiempo y tarda ' + Math.round(ctx.current.timeToGreenSec) + ' s en promedio para llegar a verde desde el estado actual. ' +
+      'Con la misma demanda observada, el ' + toLabel + ' llevaria ese bloqueo a ' + Math.round(ctx.benchmark.blockedSharePct) +
+      '% y cambiaria la capacidad efectiva de ' + Math.round(ctx.current.capacityVehH) + ' a ' + Math.round(ctx.benchmark.capacityVehH) +
+      ' v/h. Esto es mas util para IO: estado estable, tiempos de paso y margen capacidad-demanda (' +
+      formatSignedVeh(ctx.current.marginVehH) + ' -> ' + formatSignedVeh(ctx.benchmark.marginVehH) + '). La comparacion usa datos observados del otro modo dentro de la misma sesion.';
+  } catch (err) {
+    console.error('Forecast sidebar error', err);
+    if (chip) {
+      chip.className = 'fc-side-chip wait';
+      chip.textContent = 'ERROR';
+    }
+    if (source) {
+      source.textContent = 'Hubo un error actualizando el analisis operativo basado en Markov. Recarga la pagina o reinicia la corrida.';
+    }
+    renderForecastSidebarPreview(preview, null);
+    setText('fc-side-obs', '--');
+    setText('fc-side-cycles', '--');
+    setText('fc-side-conv', '--');
+    setBar('fc-side-obs-bar', 0, 'var(--R)');
+    setBar('fc-side-cycles-bar', 0, 'var(--R)');
+    setBar('fc-side-conv-bar', 0, 'var(--R)');
+    if (summary) {
+      summary.textContent = 'El lateral deberia mostrar indicadores operativos basados en la cadena de Markov. Si ves este mensaje, hubo un error calculando esa lectura.';
+    }
+  }
+}
+
+/**
+ * Simula una ventana de operación usando la matriz de Markov real cuando existe.
+ * Si no hay historial suficiente, cae en la matriz teórica del modo.
+ */
+function markovDaySimulation(lA, mode, cycles, realParams) {
+  const defaults = getForecastModeDefaults(mode);
+  const params = realParams || defaults;
+  const stepSec = Math.max(1, params.stepSec || defaults.stepSec);
+  const cycleT = Math.max(10, Number.isFinite(params.cycleT) ? params.cycleT : defaults.cycleT);
+  const totalTimeSec = Math.max(stepSec, cycles * cycleT);
+  const totalSteps = Math.max(1, Math.round(totalTimeSec / stepSec));
+  const mat = fcNormalizeMatrix(params.matrix, defaults.matrix);
+  const steady = fcNormalizeSteady(params.steady, defaults.steady);
+  const muGreen = fcClamp(Number.isFinite(params.muGreen) ? params.muGreen : defaults.muGreen, 0.01, 1.20);
+
+  let totalArrivals = 0;
+  let totalQTime = 0;
+  let totalSv = 0;
+  let maxQAll = 0;
+  let state = fcSampleFromSteady(steady, 'R');
+  let queue = Math.max(0, Math.round(params.initialQueue || 0));
+
+  for (let step = 0; step < totalSteps; step++) {
+    const arrivals = fcSamplePoisson(Math.max(0, lA) * stepSec);
+    queue += arrivals;
+    totalArrivals += arrivals;
+
+    if (state === 'G' && queue > 0) {
+      const served = Math.min(queue, fcSamplePoisson(muGreen * stepSec));
+      queue -= served;
+      totalSv += served;
+    }
+
+    if (queue > maxQAll) maxQAll = queue;
+    totalQTime += queue * stepSec;
+    state = fcNextMarkovState(state, mat);
+  }
+
+  const lambdaEff = totalTimeSec > 0 ? totalArrivals / totalTimeSec : lA;
+  const Lq = totalTimeSec > 0 ? totalQTime / totalTimeSec : 0;
+  const wqSec = lambdaEff > 0 ? (Lq / lambdaEff) : 0;
+  const muEff = muGreen * Math.max(steady.G, 0.001);
+  const rho = Math.min(0.99, lambdaEff / Math.max(muEff, 0.001));
+  const tp = totalSv / (totalTimeSec / 3600);
+
+  return {
+    wq:   Math.max(0, wqSec / 60),
+    maxQ: maxQAll,
+    tp:   Math.round(tp),
+    rho:  rho,
+    Lq:   Lq,
+  };
+}
+
+/**
+ * Monte Carlo: corre N réplicas con los parámetros reales del simulador.
+ */
+function monteCarlo(lA, mode, cycles, nRep, realParams) {
+  const wqs = [], maxQs = [], tps = [], rhos = [];
+  for (let i = 0; i < nRep; i++) {
+    const r = markovDaySimulation(lA, mode, cycles, realParams);
+    wqs.push(r.wq); maxQs.push(r.maxQ); tps.push(r.tp); rhos.push(r.rho);
+  }
+  function stats(arr) {
+    arr.sort((a,b)=>a-b);
+    const n = arr.length;
+    const mean = arr.reduce((s,v)=>s+v,0)/n;
+    const std  = Math.sqrt(arr.reduce((s,v)=>s+(v-mean)*(v-mean),0)/n);
+    const z95  = 1.96;
+    const se   = std / Math.sqrt(n);
+    return { mean, lo: Math.max(0, mean - z95*se), hi: mean + z95*se,
+             p10: arr[Math.floor(n*0.10)], p90: arr[Math.floor(n*0.90)] };
+  }
+  return {
+    wq:   stats(wqs),
+    maxQ: stats(maxQs),
+    tp:   stats(tps),
+    rho:  stats(rhos),
+  };
+}
+
+function openForecast() {
+  document.getElementById('forecast-modal').classList.add('show');
+  const scenarioSel = document.getElementById('fc-scenario');
+  if (scenarioSel && SIM.scenario && FC_SCENARIOS[SIM.scenario]) scenarioSel.value = SIM.scenario;
+  // Si ya hay datos de la simulación corriendo, ejecutar inmediatamente
+  runMarkovForecast();
+}
+
+function runMarkovForecast() {
+  const startMonth = parseInt(document.getElementById('fc-start-month').value);
+  const scenario   = document.getElementById('fc-scenario').value;
+  const nRep       = parseInt(document.getElementById('fc-replicas').value);
+  document.getElementById('fc-rep-label').textContent = nRep;
+  const context = getForecastContext({
+    startMonth: startMonth,
+    scenario: scenario,
+    nRep: nRep,
+    months: 6,
+    cacheSlot: 'modal',
+  });
+  if (!context.readiness.renderable) {
+    renderForecastBlocked(context);
+    return;
+  }
+  setForecastModalReady(true);
+  updateForecastDataSource(context, context.scenarioLabel);
+  renderForecastCharts(context.results);
+  renderForecastTable(context.results, startMonth, scenario);
+}
+
+// ── Renderizado de gráficos ──────────────────────────────────────────────────
+
+function drawForecastChart(canvasId, datasets, yLabel, fmtY) {
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.offsetWidth || cv.parentElement.clientWidth || 400;
+  cv.width = W; // reasignar width para limpiar
+  const H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const PAD = { t:10, r:14, b:28, l:50 };
+  const pw = W - PAD.l - PAD.r;
+  const ph = H - PAD.t - PAD.b;
+  const N  = datasets[0].x.length;
+
+  // Fondo
+  ctx.fillStyle = '#0b0f16';
+  ctx.fillRect(0, 0, W, H);
+
+  // Calcular rango Y
+  let allVals = [];
+  datasets.forEach(d => {
+    if (d.lo)  allVals = allVals.concat(d.lo);
+    if (d.hi)  allVals = allVals.concat(d.hi);
+    allVals = allVals.concat(d.y);
+  });
+  const yMin = 0;
+  const yMax = Math.max(...allVals) * 1.12 || 1;
+
+  const xPos = i => PAD.l + (i / (N - 1)) * pw;
+  const yPos = v => PAD.t + ph - ((v - yMin) / (yMax - yMin)) * ph;
+
+  // Grid
+  ctx.strokeStyle = '#182030'; ctx.lineWidth = 0.5;
+  for (let gi = 0; gi <= 4; gi++) {
+    const yv = yMin + (yMax - yMin) * gi / 4;
+    const yp = yPos(yv);
+    ctx.beginPath(); ctx.moveTo(PAD.l, yp); ctx.lineTo(PAD.l + pw, yp); ctx.stroke();
+    ctx.fillStyle = '#2a3848'; ctx.font = '8px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtY(yv), PAD.l - 4, yp + 3);
+  }
+
+  // Etiquetas X (meses)
+  datasets[0].labels.forEach((lbl, i) => {
+    ctx.fillStyle = '#4e6078'; ctx.font = '7px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(lbl, xPos(i), H - 8);
+    // tick vertical
+    ctx.strokeStyle = '#182030'; ctx.lineWidth = 0.4;
+    ctx.beginPath(); ctx.moveTo(xPos(i), PAD.t + ph); ctx.lineTo(xPos(i), PAD.t + ph + 3); ctx.stroke();
+  });
+
+  // Eje Y label
+  ctx.save(); ctx.translate(10, PAD.t + ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = '#2a3848'; ctx.font = '7px JetBrains Mono, monospace';
+  ctx.textAlign = 'center'; ctx.fillText(yLabel, 0, 0);
+  ctx.restore();
+
+  // Bandas IC 95%
+  datasets.forEach(d => {
+    if (!d.lo || !d.hi) return;
+    ctx.beginPath();
+    for (let i = 0; i < N; i++) ctx.lineTo(xPos(i), yPos(d.hi[i]));
+    for (let i = N-1; i >= 0; i--) ctx.lineTo(xPos(i), yPos(d.lo[i]));
+    ctx.closePath();
+    ctx.fillStyle = d.bandColor || 'rgba(255,255,255,0.05)';
+    ctx.fill();
+    // Borde dashed
+    ctx.setLineDash([3,3]);
+    ctx.strokeStyle = d.dashColor || 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    d.hi.forEach((v,i) => i===0 ? ctx.moveTo(xPos(i),yPos(v)) : ctx.lineTo(xPos(i),yPos(v)));
+    ctx.stroke();
+    ctx.beginPath();
+    d.lo.forEach((v,i) => i===0 ? ctx.moveTo(xPos(i),yPos(v)) : ctx.lineTo(xPos(i),yPos(v)));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Líneas principales + puntos
+  datasets.forEach(d => {
+    ctx.beginPath();
+    d.y.forEach((v, i) => i===0 ? ctx.moveTo(xPos(i), yPos(v)) : ctx.lineTo(xPos(i), yPos(v)));
+    ctx.strokeStyle = d.color; ctx.lineWidth = 2; ctx.stroke();
+
+    // Puntos
+    d.y.forEach((v, i) => {
+      ctx.beginPath();
+      ctx.arc(xPos(i), yPos(v), 3.5, 0, Math.PI*2);
+      ctx.fillStyle = d.color; ctx.fill();
+      ctx.strokeStyle = '#07090d'; ctx.lineWidth = 1; ctx.stroke();
+      // Valor encima
+      ctx.fillStyle = d.color; ctx.font = '7px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(fmtY(v), xPos(i), yPos(v) - 6);
+    });
+  });
+}
+
+function renderForecastCharts(results) {
+  const labels = results.map(r => MONTH_NAMES[r.mIdx].substring(0,3));
+
+  // ─ Wq ─
+  drawForecastChart('fc-wq-chart', [
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>+r.conv.wq.mean.toFixed(2)),
+      lo: results.map(r=>+r.conv.wq.lo.toFixed(2)),
+      hi: results.map(r=>+r.conv.wq.hi.toFixed(2)),
+      color:'#ff2d50', bandColor:'rgba(255,45,80,0.10)', dashColor:'rgba(255,45,80,0.35)',
+      labels,
+    },
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>+r.intel.wq.mean.toFixed(2)),
+      lo: results.map(r=>+r.intel.wq.lo.toFixed(2)),
+      hi: results.map(r=>+r.intel.wq.hi.toFixed(2)),
+      color:'#00df76', bandColor:'rgba(0,223,118,0.08)', dashColor:'rgba(0,223,118,0.35)',
+      labels,
+    },
+  ], 'min', v => v.toFixed(1)+'m');
+
+  // ─ Cola ─
+  drawForecastChart('fc-q-chart', [
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>Math.round(r.conv.maxQ.mean)),
+      lo: results.map(r=>Math.round(r.conv.maxQ.lo)),
+      hi: results.map(r=>Math.round(r.conv.maxQ.hi)),
+      color:'#ff2d50', bandColor:'rgba(255,45,80,0.10)', dashColor:'rgba(255,45,80,0.35)',
+      labels,
+    },
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>Math.round(r.intel.maxQ.mean)),
+      lo: results.map(r=>Math.round(r.intel.maxQ.lo)),
+      hi: results.map(r=>Math.round(r.intel.maxQ.hi)),
+      color:'#00df76', bandColor:'rgba(0,223,118,0.08)', dashColor:'rgba(0,223,118,0.35)',
+      labels,
+    },
+  ], 'veh', v => Math.round(v)+'');
+
+  // ─ Throughput ─
+  drawForecastChart('fc-tp-chart', [
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>Math.round(r.conv.tp.mean)),
+      lo: results.map(r=>Math.round(r.conv.tp.lo)),
+      hi: results.map(r=>Math.round(r.conv.tp.hi)),
+      color:'#ff2d50', bandColor:'rgba(255,45,80,0.10)', dashColor:'rgba(255,45,80,0.35)',
+      labels,
+    },
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>Math.round(r.intel.tp.mean)),
+      lo: results.map(r=>Math.round(r.intel.tp.lo)),
+      hi: results.map(r=>Math.round(r.intel.tp.hi)),
+      color:'#00df76', bandColor:'rgba(0,223,118,0.08)', dashColor:'rgba(0,223,118,0.35)',
+      labels,
+    },
+  ], 'v/h', v => Math.round(v)+'');
+
+  // ─ ρ ─
+  drawForecastChart('fc-rho-chart', [
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>+(r.conv.rho.mean*100).toFixed(1)),
+      lo: results.map(r=>+(r.conv.rho.lo*100).toFixed(1)),
+      hi: results.map(r=>+(r.conv.rho.hi*100).toFixed(1)),
+      color:'#ff2d50', bandColor:'rgba(255,45,80,0.10)', dashColor:'rgba(255,45,80,0.35)',
+      labels,
+    },
+    {
+      x: results.map((_,i)=>i), y: results.map(r=>+(r.intel.rho.mean*100).toFixed(1)),
+      lo: results.map(r=>+(r.intel.rho.lo*100).toFixed(1)),
+      hi: results.map(r=>+(r.intel.rho.hi*100).toFixed(1)),
+      color:'#00df76', bandColor:'rgba(0,223,118,0.08)', dashColor:'rgba(0,223,118,0.35)',
+      labels,
+    },
+  ], '%', v => v.toFixed(0)+'%');
+}
+
+function renderForecastTable(results, startMonth, scenario) {
+  const tbody = document.getElementById('fc-table-body');
+  tbody.innerHTML = '';
+  const summary = summarizeForecastResults(results);
+
+  results.forEach(r => {
+    const wqC  = r.conv.wq.mean.toFixed(2);
+    const wqI  = r.intel.wq.mean.toFixed(2);
+    const wqPct = r.conv.wq.mean > 0
+      ? Math.round((1 - r.intel.wq.mean / r.conv.wq.mean) * 100) : 0;
+    const qC  = Math.round(r.conv.maxQ.mean);
+    const qI  = Math.round(r.intel.maxQ.mean);
+    const tpC = Math.round(r.conv.tp.mean);
+    const tpI = Math.round(r.intel.tp.mean);
+    const tpPct = tpC > 0 ? Math.round((tpI - tpC) / tpC * 100) : 0;
+
+    const wqCol = wqPct >= 0 ? 'var(--G)' : 'var(--R)';
+    const tpCol = tpPct >= 0 ? 'var(--G)' : 'var(--R)';
+
+    const row = document.createElement('div');
+    row.className = 'fc-tbl-row';
+    row.innerHTML = `
+      <span>${MONTH_NAMES[r.mIdx]}</span>
+      <span class="cv">${wqC}m</span>
+      <span class="iv">${wqI}m</span>
+      <span class="dv" style="color:${wqCol}">${wqPct>=0?'↓':'↑'}${Math.abs(wqPct)}%</span>
+      <span class="cv">${qC}</span>
+      <span class="iv">${qI}</span>
+      <span class="cv">${tpC}</span>
+      <span class="iv">${tpI}</span>
+      <span class="dv" style="color:${tpCol}">${tpPct>=0?'↑':'↓'}${Math.abs(tpPct)}%</span>
+    `;
+    tbody.appendChild(row);
+  });
+
+  const avgWq = summary.avgWqDelta;
+  const avgTp = summary.avgTpDelta;
+  const scLabel = FC_SCENARIOS[scenario].label;
+
+  const verdict = document.getElementById('fc-verdict-row');
+  const isPositive = avgWq > 0 && avgTp > 0;
+  verdict.style.background   = isPositive ? 'rgba(0,223,118,0.08)' : 'rgba(255,190,46,0.08)';
+  verdict.style.border       = '1px solid ' + (isPositive ? 'rgba(0,223,118,0.3)' : 'rgba(255,190,46,0.3)');
+  verdict.style.color        = isPositive ? 'var(--G)' : 'var(--Y)';
+  verdict.innerHTML = isPositive
+    ? `Escenario: ${scLabel} · Proyeccion 6 meses: modo INTELIGENTE reduce Wq ~${avgWq}% y mejora throughput ~${avgTp}% en promedio mensual · λ crece +${(GROWTH_RATE*100).toFixed(1)}%/mes · mejora adaptativa acumulada +${(INTEL_LEARN_RATE*100).toFixed(1)}%/mes`
+    : `Escenario: ${scLabel} · Alta demanda proyectada: revisar capacidad de interseccion. Mejora Wq ~${Math.abs(avgWq)}% aun esperada con modo inteligente.`;
+}
