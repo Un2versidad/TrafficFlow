@@ -174,61 +174,140 @@ Lq  =  λ · Wq
 
 Calculado en vivo en el panel derecho. Los IC al 95% se estiman con 30 réplicas independientes.
 
-### 4. Cadena de Markov discreta — Sem A
+### 4. Programación Lineal — asignación óptima de verdes (Solver QM)
 
-Estado del semáforo modelado como cadena de Markov de tiempo discreto (dt = 1s):
+Para formalizar la decisión de tiempos semafóricos se plantea un modelo de **Programación Lineal (PL)** para el escenario pico.
 
-**Modo convencional** (ciclo 122s: verde 18s · amarillo 4s · rojo 100s):
+**Variables de decisión**
+
+- `gH`: segundos de verde para la fase horizontal `(A + C + D)` por ciclo.
+- `gV`: segundos de verde para la fase vertical `(B)` por ciclo.
+- `uH`: déficit de capacidad horizontal (veh/ciclo).
+- `uV`: déficit de capacidad vertical (veh/ciclo).
+
+**Parámetros del caso pico**
+
+- `λ_A = 0.25 veh/s`, `λ_B = 0.08 veh/s`.
+- Demanda horizontal agregada: `λ_H = 1.05·λ_A = 0.2625 veh/s`.
+- Demanda vertical: `λ_V = λ_B = 0.08 veh/s`.
+- Ciclo objetivo inteligente: `C = 66 s`.
+- Amarillos fijos: `4 s + 4 s`  →  tiempo verde total disponible: `gH + gV = 58`.
+- Capacidades de descarga calibradas en simulación:
+  `sH = 0.50 veh/s`, `sV = 0.42 veh/s`.
+- Demanda por ciclo: `dH = λ_H·C = 17.33 veh/ciclo`, `dV = λ_V·C = 5.28 veh/ciclo`.
+
+**Función objetivo**
 
 ```
-        ┌─────────────────────────────────┐
-        │  → VERDE  → AMARILLO  → ROJO  → │
-        │                                 │
-P_conv: │  R→R: 0.990   R→Y: 0.010        │
-        │  Y→Y: 0.750   Y→G: 0.250        │
-        │  G→G: 0.944   G→Y: 0.056        │
-        └─────────────────────────────────┘
-
-Distribución estacionaria: π(G)=0.148  π(Y)=0.033  π(R)=0.820
+Max Z = 0.50·gH + 0.42·gV − 8·uH − 5·uV
 ```
 
-**Modo inteligente** (ciclo ~66s: verde 30s · amarillo 4s · rojo 32s promedio):
+**Restricciones**
 
 ```
-P_intel: R→R: 0.969   R→Y: 0.031
-         Y→Y: 0.750   Y→G: 0.250
-         G→G: 0.967   G→Y: 0.033
-
-Distribución estacionaria: π(G)≈0.455  π(R)≈0.485
+gH + gV = 58
+15 <= gH <= 41
+12 <= gV <= 41
+0.50·gH + uH >= 17.33
+0.42·gV + uV >= 5.28
+gH, gV, uH, uV >= 0
 ```
 
-El panel lateral muestra la matriz empírica P en tiempo real, la distribución π observada vs teórica, la métrica de convergencia (1 − TVD), y la predicción del próximo estado.
+**Resolución en Solver QM (método Simplex)**
+
+- Módulo: `Linear Programming` → `Maximize`.
+- Resultado óptimo: `gH* = 41 s`, `gV* = 17 s`, `uH* = 0`, `uV* = 0`.
+- Valor óptimo: `Z* = 27.64`.
+- Interpretación: el plan base recomendado para hora pico asigna `70.7%` del verde efectivo al eje horizontal y `29.3%` al vertical, sin déficit de capacidad.
+
+### 5. Cadena de Markov discreta — Sem A
+
+El estado del semáforo se modela como cadena de Markov de tiempo discreto (`dt = 1 s`) con orden de estados:
+
+`[G, Y, R] = [Verde, Amarillo, Rojo]`
+
+La evolución del estado se calcula con:
+
+`p_{t+1} = p_t·P`  y  `p_t = p_0·P^t`
+
+**Matriz de transición — modo convencional**  
+(ciclo 122 s: 18 verde, 4 amarillo, 100 rojo)
+
+```
+P_conv =
+[0.944  0.056  0.000
+ 0.000  0.750  0.250
+ 0.010  0.000  0.990]
+```
+
+**Matriz de transición — modo inteligente**  
+(ciclo ~66 s: 30 verde, 4 amarillo, 32 rojo promedio)
+
+```
+P_int =
+[0.967  0.033  0.000
+ 0.000  0.750  0.250
+ 0.031  0.000  0.969]
+```
+
+**Cálculos numéricos (iniciando en rojo `p0 = [0, 0, 1]`)**
+
+| Tiempo | `p_t` convencional `[G,Y,R]` | `p_t` inteligente `[G,Y,R]` |
+|---|---|---|
+| `t = 10 s` | `[0.0746, 0.0113, 0.9141]` | `[0.2324, 0.0207, 0.7469]` |
+| `t = 60 s` | `[0.1445, 0.0322, 0.8233]` | `[0.4492, 0.0590, 0.4918]` |
+| `t → ∞` (π) | `[0.1465, 0.0328, 0.8206]` | `[0.4553, 0.0601, 0.4846]` |
+
+**Aplicación directa al problema**
+
+- La fracción estacionaria en rojo baja de `0.8206` a `0.4846` (reducción de `40.9%`).
+- La probabilidad estacionaria de verde sube de `0.1465` a `0.4553` (más de `3x`).
+- Estas probabilidades alimentan el panel de predicción de estado, la estimación de espera y la validación del control adaptativo contra la operación convencional.
+
+El panel lateral muestra la matriz empírica `P` en tiempo real, la distribución `π` observada vs teórica, la métrica de convergencia `(1 − TVD)`, y la predicción del próximo estado.
 
 ---
 
 ## Metodología del proyecto
 
-El proyecto siguió 4 fases definidas en la presentación académica:
+El proyecto siguió 5 fases integradas para la toma de decisiones:
 
 **FASE 1 — Levantamiento de datos de campo**
 - Medición directa de ciclos semafóricos en la intersección
 - Conteo vehicular por franjas horarias: **7–9 AM · 12–2 PM · 5–7 PM**
 - Registro de patrones críticos: colas de hasta 80–140 m en hora pico
 
-**FASE 2 — Diseño del modelo M/G/1**
+**FASE 2 — Modelado base de desempeño (M/G/1)**
 - Sistema de colas M/G/1 con tasa λ (Poisson) y μ (General)
 - Ecuaciones de Pollaczek-Khinchine para Wq, Lq
 - Variables continuas (tiempo) y discretas (estados semafóricos)
 
-**FASE 3 — Implementación**
+**FASE 3 — Optimización por Programación Lineal (Solver QM)**
+- Definición explícita de variables de decisión (`gH`, `gV`) y restricciones operativas
+- Maximización del flujo servido con penalización de déficit
+- Obtención de plan base óptimo por escenario (ej. pico: `41s/17s`)
+
+**FASE 4 — Modelado dinámico con Markov**
+- Construcción de matrices de transición `P_conv` y `P_int`
+- Cálculo de probabilidades de estado a `t` pasos y distribución estacionaria `π`
+- Estimación probabilística de tiempo en rojo/verde para alimentar la política de control
+
+**FASE 5 — Implementación y validación en simulación**
 - Arquitectura Source → Queue → Processor → Sink
 - Distribución exponencial para llegadas (proceso de Poisson)
 - Configuración de tiempos adaptativos según densidad de cola
 
-**FASE 4 — Validación y análisis**
 - 30 réplicas independientes con IC al 95%
-- Validación cruzada con teoría M/G/1
+- Validación cruzada con teoría M/G/1 + resultados de PL + predicción Markov
 - Análisis de sensibilidad por escenario (valle, mañana, mediodía, pico)
+
+### Integración PL + Markov + Simulación para decidir
+
+1. **Programación Lineal (PL):** define el plan óptimo base de tiempos verdes por ciclo bajo restricciones reales.
+2. **Markov:** traduce ese plan en probabilidades de transición de estados semafóricos y anticipa permanencia en rojo/verde.
+3. **Simulación de eventos discretos:** prueba el plan y las transiciones bajo variabilidad vehicular real (Poisson + IDM + colas), midiendo KPIs.
+
+Ciclo de decisión aplicado: `optimizar (PL) → predecir (Markov) → validar/ajustar (Simulación)`.
 
 ---
 
